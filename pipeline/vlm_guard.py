@@ -118,11 +118,18 @@ class VLMGuard:
                 reasoning="Ollama server unreachable",
                 quality_issues=None, raw_response="",
             )
-        except (requests.Timeout, requests.HTTPError, KeyError) as e:
-            logger.warning("Ollama request failed: %s", e)
+        except (requests.Timeout, requests.HTTPError) as e:
+            logger.warning("Ollama HTTP error: %s", e)
             return VLMVerdict(
                 same_person=None, confidence="unknown",
-                reasoning=f"Ollama error: {e}",
+                reasoning="Ollama request failed (timeout or HTTP error)",
+                quality_issues=None, raw_response="",
+            )
+        except (KeyError, ValueError) as e:
+            logger.warning("Ollama response malformed: %s", e)
+            return VLMVerdict(
+                same_person=None, confidence="unknown",
+                reasoning="Ollama returned unexpected response format",
                 quality_issues=None, raw_response="",
             )
 
@@ -139,8 +146,16 @@ class VLMGuard:
                 cleaned = re.sub(r"\s*```$", "", cleaned)
 
             data = json.loads(cleaned)
+            raw_same = data.get("same_person")
+            # Strict boolean check — reject string "true"/"false" or int 0/1
+            if isinstance(raw_same, bool):
+                same_person = raw_same
+            elif isinstance(raw_same, str):
+                same_person = raw_same.lower() == "true"
+            else:
+                same_person = None
             return VLMVerdict(
-                same_person=bool(data.get("same_person")),
+                same_person=same_person,
                 confidence=str(data.get("confidence", "unknown")),
                 reasoning=str(data.get("reasoning", "")),
                 quality_issues=data.get("quality_issues"),

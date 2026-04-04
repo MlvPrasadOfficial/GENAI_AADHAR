@@ -46,7 +46,12 @@ class SimilarityScorer:
 
         Returns:
             Cosine similarity clamped to [0.0, 1.0].
+
+        Raises:
+            ValueError: If embeddings have mismatched shapes.
         """
+        if e1.shape != e2.shape:
+            raise ValueError(f"Embedding shape mismatch: {e1.shape} vs {e2.shape}")
         return float(np.clip(np.dot(e1, e2), 0.0, 1.0))
 
     def decide(self, score: float, quality_low: bool = False) -> SimilarityDecision:

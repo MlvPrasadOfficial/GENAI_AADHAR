@@ -54,12 +54,17 @@ def main():
     )
 
     # Validate inputs
-    if not args.aadhaar.exists():
-        print(f"Error: Aadhaar image not found: {args.aadhaar}", file=sys.stderr)
-        sys.exit(2)
-    if not args.selfie.exists():
-        print(f"Error: Selfie image not found: {args.selfie}", file=sys.stderr)
-        sys.exit(2)
+    MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB — generous limit for photos
+    for label, path in [("Aadhaar", args.aadhaar), ("Selfie", args.selfie)]:
+        if not path.exists():
+            print(f"Error: {label} image not found: {path}", file=sys.stderr)
+            sys.exit(2)
+        if path.stat().st_size > MAX_FILE_SIZE:
+            print(f"Error: {label} file too large ({path.stat().st_size // 1024 // 1024}MB > 50MB limit)", file=sys.stderr)
+            sys.exit(2)
+        if path.stat().st_size == 0:
+            print(f"Error: {label} file is empty: {path}", file=sys.stderr)
+            sys.exit(2)
 
     # Load config and build pipeline
     try:

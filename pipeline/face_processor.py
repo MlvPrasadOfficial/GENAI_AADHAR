@@ -88,18 +88,17 @@ class FaceProcessor:
         if self._app is None:
             raise RuntimeError("FaceProcessor not loaded. Call load() first.")
 
-        # Primary detection at configured threshold
-        faces = self._app.get(image)
-        faces = [f for f in faces if f.det_score >= self.det_thresh]
+        # Run detector once, then filter at configured threshold
+        all_faces = self._app.get(image)
+        faces = [f for f in all_faces if f.det_score >= self.det_thresh]
 
-        # Fallback: lower threshold if no face found
+        # Fallback: filter same results at lower threshold (no re-detection)
         if not faces:
             logger.info(
-                "No face at det_thresh=%.2f for %s, retrying at %.2f",
+                "No face at det_thresh=%.2f for %s, relaxing to %.2f",
                 self.det_thresh, source, self.det_thresh_fallback,
             )
-            faces = self._app.get(image)
-            faces = [f for f in faces if f.det_score >= self.det_thresh_fallback]
+            faces = [f for f in all_faces if f.det_score >= self.det_thresh_fallback]
 
         if not faces:
             raise NoFaceDetectedError(
@@ -111,6 +110,14 @@ class FaceProcessor:
         best = max(faces, key=lambda f: f.det_score)
         bbox = tuple(int(x) for x in best.bbox[:4])
         embedding = best.normed_embedding  # already L2-normalized, shape (512,)
+
+        # Safety: re-normalize if InsightFace returned non-unit vector
+        norm = np.linalg.norm(embedding)
+        if norm < 1e-6:
+            raise NoFaceDetectedError(source, "Face embedding has zero norm")
+        if abs(norm - 1.0) > 0.01:
+            logger.warning("%s: embedding norm=%.4f, re-normalizing", source, norm)
+            embedding = embedding / norm
 
         # Get aligned crop from the face's internal representation
         # InsightFace stores the aligned 112x112 in face.normed_embedding's source

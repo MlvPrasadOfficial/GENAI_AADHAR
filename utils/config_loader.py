@@ -37,8 +37,18 @@ def _validate(config: dict) -> None:
             raise ValueError(f"Missing required config section: '{section}'")
 
     sim = config["similarity"]
+    for key in ("match_threshold", "uncertain_low"):
+        val = sim[key]
+        if not (0.0 <= val <= 1.0):
+            raise ValueError(f"similarity.{key} must be in [0.0, 1.0], got {val}")
     if sim["uncertain_low"] >= sim["match_threshold"]:
         raise ValueError(
             f"uncertain_low ({sim['uncertain_low']}) must be < "
             f"match_threshold ({sim['match_threshold']})"
         )
+
+    det = config["face"]
+    if not (0.0 <= det["det_thresh"] <= 1.0):
+        raise ValueError(f"face.det_thresh must be in [0.0, 1.0], got {det['det_thresh']}")
+    if "det_thresh_fallback" in det and det["det_thresh_fallback"] >= det["det_thresh"]:
+        raise ValueError("face.det_thresh_fallback must be < face.det_thresh")

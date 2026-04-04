@@ -59,6 +59,31 @@ class TestVLMGuardParsing:
         verdict = guard._parse_response("")
         assert verdict.same_person is None
 
+    def test_string_true_handled(self, guard):
+        raw = '{"same_person": "true", "confidence": "high", "reasoning": "Match", "quality_issues": null}'
+        verdict = guard._parse_response(raw)
+        assert verdict.same_person is True
+
+    def test_string_false_handled(self, guard):
+        raw = '{"same_person": "false", "confidence": "low", "reasoning": "No", "quality_issues": null}'
+        verdict = guard._parse_response(raw)
+        assert verdict.same_person is False
+
+    def test_integer_same_person_returns_none(self, guard):
+        raw = '{"same_person": 1, "confidence": "high", "reasoning": "Match", "quality_issues": null}'
+        verdict = guard._parse_response(raw)
+        assert verdict.same_person is None
+
+    def test_boolean_true_preserved(self, guard):
+        raw = '{"same_person": true, "confidence": "high", "reasoning": "Match", "quality_issues": null}'
+        verdict = guard._parse_response(raw)
+        assert verdict.same_person is True
+
+    def test_boolean_false_preserved(self, guard):
+        raw = '{"same_person": false, "confidence": "low", "reasoning": "No", "quality_issues": null}'
+        verdict = guard._parse_response(raw)
+        assert verdict.same_person is False
+
 
 class TestVLMGuardHTTP:
     @patch("pipeline.vlm_guard.requests.post")

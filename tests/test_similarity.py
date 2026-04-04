@@ -45,6 +45,12 @@ class TestCosineSimilarity:
         score = scorer.cosine_similarity(random_embedding(), random_embedding())
         assert isinstance(score, float)
 
+    def test_mismatched_shapes_raises(self, scorer):
+        v1 = np.random.randn(512).astype(np.float32)
+        v2 = np.random.randn(256).astype(np.float32)
+        with pytest.raises(ValueError, match="shape mismatch"):
+            scorer.cosine_similarity(v1, v2)
+
 
 class TestDecision:
     """Test threshold decision tree."""

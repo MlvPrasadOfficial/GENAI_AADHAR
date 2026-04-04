@@ -88,8 +88,12 @@ class KYCPipelineOrchestrator:
             selfie_img, selfie_quality = self.enhancer.maybe_enhance(selfie_img)
             timings["enhancement_ms"] = _elapsed_ms(t0)
 
-            quality_low = aadhaar_quality < self.enhancer.quality_threshold or \
-                          selfie_quality < self.enhancer.quality_threshold
+            # Re-assess quality AFTER enhancement to avoid false flags
+            # (pre-enhancement score is stored for reporting, post for decision)
+            aadhaar_post_q = self.enhancer.quality_score(aadhaar_img)
+            selfie_post_q = self.enhancer.quality_score(selfie_img)
+            quality_low = aadhaar_post_q < self.enhancer.quality_threshold or \
+                          selfie_post_q < self.enhancer.quality_threshold
 
             # --- Stage 3: Face detection + alignment + embedding ---
             t0 = time.perf_counter()
@@ -163,6 +167,26 @@ class KYCPipelineOrchestrator:
                 selfie_quality=selfie_quality,
                 error=str(e),
             )
+        except (ValueError, OSError) as e:
+            logger.error("Image loading error: %s", e)
+            return PipelineResult(
+                match=False, confidence_pct=0.0, cosine_score=0.0,
+                vlm_same_person=None, vlm_reasoning=None,
+                stage_timings=timings,
+                aadhaar_quality=aadhaar_quality,
+                selfie_quality=selfie_quality,
+                error=f"Invalid image: {e}",
+            )
+        except Exception as e:
+            logger.error("Unexpected error: %s", e, exc_info=True)
+            return PipelineResult(
+                match=False, confidence_pct=0.0, cosine_score=0.0,
+                vlm_same_person=None, vlm_reasoning=None,
+                stage_timings=timings,
+                aadhaar_quality=aadhaar_quality,
+                selfie_quality=selfie_quality,
+                error=f"Unexpected error: {type(e).__name__}",
+            )
 
     def _fuse_decision(
         self,
@@ -183,34 +207,42 @@ class KYCPipelineOrchestrator:
             0.40–0.60 + VLM says no → NO MATCH
             < 0.40 → NO MATCH (no VLM)
 
+        Confidence formula:
+            base  = cosine_score * 100             (0–100 scale)
+            VLM confirmation adds fixed bonus:     +8 points
+            VLM rejection applies fixed penalty:   -20 points
+            Quality flag reduces by:               -5 points
+            Final clamped to [0.0, 99.0]
+
         Returns:
             (match: bool, confidence_pct: float)
         """
         match_thresh = self.scorer.match_threshold
+        base_conf = score * 100.0
 
         if score >= match_thresh:
             if vlm_same_person is False:
                 # VLM explicitly says no despite high score — reject
                 match = False
-                confidence_pct = score * 100 * 0.5
+                confidence_pct = base_conf - 20.0
             else:
-                # VLM says yes, unavailable (None), or wasn't invoked — trust score
                 match = True
-                vlm_boost = 1.15 if vlm_same_person is True else 1.0
-                confidence_pct = score * 100 * vlm_boost
+                vlm_bonus = 8.0 if vlm_same_person is True else 0.0
+                quality_penalty = 5.0 if decision.quality_low else 0.0
+                confidence_pct = base_conf + vlm_bonus - quality_penalty
         elif score >= self.scorer.uncertain_low:
             if vlm_same_person is True:
                 match = True
-                confidence_pct = score * 100 * 1.1
+                confidence_pct = base_conf + 8.0
             else:
                 # VLM says no, unavailable, or wasn't invoked — conservative reject
                 match = False
-                confidence_pct = score * 100 * 0.7
+                confidence_pct = base_conf - 10.0
         else:
             match = False
-            confidence_pct = score * 100
+            confidence_pct = base_conf
 
-        confidence_pct = min(confidence_pct, 99.0)
+        confidence_pct = max(0.0, min(confidence_pct, 99.0))
         return match, round(confidence_pct, 1)
 
 
