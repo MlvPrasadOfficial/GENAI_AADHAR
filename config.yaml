@@ -1,0 +1,27 @@
+# Aadhaar KYC Face Matching Pipeline Configuration
+
+enhancement:
+  enabled: true
+  model: "RealESRGAN_x4plus"
+  model_path: "models/realesrgan/RealESRGAN_x4plus.pth"
+  upscale: 2
+  quality_threshold: 0.4   # skip enhancement if Laplacian quality >= this
+
+face:
+  model_pack: "buffalo_l"
+  insightface_root: "models/insightface"
+  det_size: [640, 640]
+  det_thresh: 0.7          # primary detection threshold
+  det_thresh_fallback: 0.5 # retry if no face found at primary threshold
+  ctx_id: 0                # GPU device index
+
+similarity:
+  match_threshold: 0.60    # >= this = definite match
+  uncertain_low: 0.40      # below this = definite no-match
+
+vlm_guard:
+  enabled: true
+  ollama_url: "http://localhost:11434"
+  model: "qwen2.5vl:7b"       # Best face verification accuracy (FaceXBench 2025)
+  timeout_s: 30
+  temperature: 0.1

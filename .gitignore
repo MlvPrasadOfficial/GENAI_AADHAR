@@ -1,0 +1,31 @@
+# Model weights
+models/
+*.pth
+*.onnx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
