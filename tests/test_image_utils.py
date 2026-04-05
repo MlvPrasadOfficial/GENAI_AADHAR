@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
-from utils.image_utils import bgr_to_base64_jpeg, bytes_to_bgr
+from utils.image_utils import bgr_to_base64_jpeg, bytes_to_bgr, validate_image_dimensions
 
 
 class TestBytesToBGR:
@@ -56,3 +56,62 @@ class TestBGRToBase64:
         high_q = bgr_to_base64_jpeg(img, quality=95)
         # Lower quality should produce smaller output
         assert len(low_q) < len(high_q)
+
+
+class TestInputValidation:
+    """Tests for input validation added to image_utils."""
+
+    def test_bytes_to_bgr_rejects_string(self):
+        with pytest.raises(ValueError, match="Expected bytes"):
+            bytes_to_bgr("not bytes")
+
+    def test_bytes_to_bgr_rejects_empty(self):
+        with pytest.raises(ValueError, match="empty"):
+            bytes_to_bgr(b"")
+
+    def test_bgr_to_base64_rejects_non_array(self):
+        with pytest.raises(ValueError, match="numpy array"):
+            bgr_to_base64_jpeg("not an array")
+
+    def test_bgr_to_base64_rejects_grayscale(self):
+        gray = np.zeros((112, 112), dtype=np.uint8)
+        with pytest.raises(ValueError, match="HxWx3"):
+            bgr_to_base64_jpeg(gray)
+
+    def test_bgr_to_base64_rejects_4channel(self):
+        rgba = np.zeros((112, 112, 4), dtype=np.uint8)
+        with pytest.raises(ValueError, match="HxWx3"):
+            bgr_to_base64_jpeg(rgba)
+
+    def test_bgr_to_base64_rejects_quality_zero(self):
+        img = np.zeros((10, 10, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="quality"):
+            bgr_to_base64_jpeg(img, quality=0)
+
+    def test_bgr_to_base64_rejects_quality_over_100(self):
+        img = np.zeros((10, 10, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="quality"):
+            bgr_to_base64_jpeg(img, quality=101)
+
+
+class TestValidateImageDimensions:
+    def test_valid_image(self):
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        w, h = validate_image_dimensions(img)
+        assert w == 100
+        assert h == 100
+
+    def test_too_small_both_sides(self):
+        img = np.zeros((30, 30, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="too small"):
+            validate_image_dimensions(img)
+
+    def test_one_side_too_small(self):
+        img = np.zeros((100, 40, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="too small"):
+            validate_image_dimensions(img)
+
+    def test_custom_min_size(self):
+        img = np.zeros((150, 150, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="too small"):
+            validate_image_dimensions(img, min_size=200)

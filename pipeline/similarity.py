@@ -5,6 +5,7 @@ without any ML framework installed.
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 
@@ -13,7 +14,7 @@ import numpy as np
 class SimilarityDecision:
     """Result of the threshold decision tree."""
 
-    verdict: str       # "match" | "no_match" | "uncertain"
+    verdict: Literal["match", "no_match", "uncertain"]
     score: float       # raw cosine similarity
     needs_vlm: bool    # whether VLM guard should be invoked
     quality_low: bool  # whether image quality flag was raised

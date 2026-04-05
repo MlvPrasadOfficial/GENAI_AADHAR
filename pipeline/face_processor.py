@@ -28,6 +28,9 @@ class FaceResult:
     embedding: np.ndarray      # (512,) float32, L2-normalized
     bbox: tuple[int, int, int, int]  # (x1, y1, x2, y2)
     det_score: float           # detection confidence [0, 1]
+    gender: str                # "M" or "F"
+    age: int                   # estimated age
+    num_faces_detected: int = 1  # total faces found in the image
 
 
 class FaceProcessor:
@@ -67,6 +70,13 @@ class FaceProcessor:
             providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
         )
         self._app.prepare(ctx_id=self.ctx_id, det_size=self.det_size)
+
+        # Check GPU availability
+        import onnxruntime
+        providers = onnxruntime.get_available_providers()
+        if "CUDAExecutionProvider" not in providers:
+            logger.warning("*** GPU NOT AVAILABLE *** — InsightFace running on CPU. Expect slower inference.")
+
         logger.info(
             "InsightFace %s loaded (det_size=%s, ctx_id=%d)",
             self.model_pack, self.det_size, self.ctx_id,
@@ -90,6 +100,12 @@ class FaceProcessor:
 
         # Run detector once, then filter at configured threshold
         all_faces = self._app.get(image)
+        num_faces = len(all_faces)
+        if num_faces > 1:
+            logger.warning(
+                "%s: %d faces detected, using highest-confidence face",
+                source, num_faces,
+            )
         faces = [f for f in all_faces if f.det_score >= self.det_thresh]
 
         # Fallback: filter same results at lower threshold (no re-detection)
@@ -119,15 +135,19 @@ class FaceProcessor:
             logger.warning("%s: embedding norm=%.4f, re-normalizing", source, norm)
             embedding = embedding / norm
 
-        # Get aligned crop from the face's internal representation
-        # InsightFace stores the aligned 112x112 in face.normed_embedding's source
-        # We reconstruct it from the kps (keypoints) for a clean aligned crop
+        # Generate aligned 112x112 crop from the 5-point facial landmarks
         from insightface.utils.face_align import norm_crop
 
         aligned = norm_crop(image, best.kps, image_size=112)
 
+        # Gender (0=Female, 1=Male) and age from the genderage model
+        gender_val = getattr(best, "gender", None)
+        gender = "M" if gender_val == 1 else "F" if gender_val == 0 else "unknown"
+        age = int(getattr(best, "age", 0))
+
         logger.info(
-            "%s: face detected (score=%.3f, bbox=%s)", source, best.det_score, bbox
+            "%s: face detected (score=%.3f, bbox=%s, gender=%s, age=%d)",
+            source, best.det_score, bbox, gender, age,
         )
 
         return FaceResult(
@@ -135,4 +155,7 @@ class FaceProcessor:
             embedding=embedding.astype(np.float32),
             bbox=bbox,
             det_score=float(best.det_score),
+            gender=gender,
+            age=age,
+            num_faces_detected=num_faces,
         )

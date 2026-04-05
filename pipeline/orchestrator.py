@@ -33,6 +33,14 @@ class PipelineResult:
     stage_timings: dict[str, float] = field(default_factory=dict)  # ms per stage
     aadhaar_quality: float = 0.0
     selfie_quality: float = 0.0
+    aadhaar_crop: np.ndarray | None = None  # 112x112 BGR aligned face crop
+    selfie_crop: np.ndarray | None = None   # 112x112 BGR aligned face crop
+    aadhaar_gender: str = "unknown"
+    aadhaar_age: int = 0
+    selfie_gender: str = "unknown"
+    selfie_age: int = 0
+    aadhaar_num_faces: int = 1
+    selfie_num_faces: int = 1
     error: str | None = None        # non-None if pipeline failed
 
 
@@ -51,6 +59,21 @@ class KYCPipelineOrchestrator:
         self.processor = FaceProcessor(config)
         self.scorer = SimilarityScorer(config)
         self.vlm = VLMGuard(config)
+
+        # Configurable confidence adjustments
+        ca = config.get("confidence_adjustments", {})
+        self._vlm_confirm_bonus: float = ca.get("vlm_confirmation_bonus", 8.0)
+        self._vlm_reject_high: float = ca.get("vlm_rejection_above_threshold", -20.0)
+        self._vlm_reject_uncertain: float = ca.get("vlm_rejection_uncertain", -10.0)
+        self._quality_penalty: float = ca.get("quality_penalty", -5.0)
+        self._age_gap_vlm_bonus: float = ca.get("age_gap_vlm_bonus", 5.0)
+        self._gender_mismatch_penalty: float = ca.get("gender_mismatch_penalty", 0.0)
+
+        # Age-gap threshold relaxation
+        sim = config.get("similarity", {})
+        self._age_gap_threshold: int = sim.get("age_gap_threshold", 5)
+        self._age_relaxation_per_year: float = sim.get("age_gap_relaxation_per_year", 0.01)
+        self._max_age_relaxation: float = sim.get("max_age_gap_relaxation", 0.10)
 
     def load(self) -> None:
         """Load all model weights. Call once at startup."""
@@ -121,6 +144,8 @@ class KYCPipelineOrchestrator:
                     aadhaar_face.aligned_crop,
                     selfie_face.aligned_crop,
                     cosine_score=score,
+                    aadhaar_age=aadhaar_face.age,
+                    selfie_age=selfie_face.age,
                 )
                 timings["vlm_ms"] = _elapsed_ms(t0)
                 vlm_same_person = verdict.same_person
@@ -132,8 +157,15 @@ class KYCPipelineOrchestrator:
                 )
 
             # --- Stage 6: Final decision fusion ---
+            age_gap = abs(aadhaar_face.age - selfie_face.age)
+            gender_mismatch = (
+                aadhaar_face.gender != selfie_face.gender
+                and aadhaar_face.gender != "unknown"
+                and selfie_face.gender != "unknown"
+            )
             match, confidence_pct = self._fuse_decision(
-                score, decision, vlm_same_person
+                score, decision, vlm_same_person,
+                age_gap=age_gap, gender_mismatch=gender_mismatch,
             )
 
             return PipelineResult(
@@ -145,6 +177,14 @@ class KYCPipelineOrchestrator:
                 stage_timings=timings,
                 aadhaar_quality=aadhaar_quality,
                 selfie_quality=selfie_quality,
+                aadhaar_crop=aadhaar_face.aligned_crop,
+                selfie_crop=selfie_face.aligned_crop,
+                aadhaar_gender=aadhaar_face.gender,
+                aadhaar_age=aadhaar_face.age,
+                selfie_gender=selfie_face.gender,
+                selfie_age=selfie_face.age,
+                aadhaar_num_faces=aadhaar_face.num_faces_detected,
+                selfie_num_faces=selfie_face.num_faces_detected,
             )
 
         except NoFaceDetectedError as e:
@@ -188,59 +228,82 @@ class KYCPipelineOrchestrator:
                 error=f"Unexpected error: {type(e).__name__}",
             )
 
+    def _compute_age_relaxation(self, age_gap: int) -> float:
+        """Compute threshold relaxation amount based on age gap.
+
+        Returns a non-negative float to subtract from match_threshold.
+        """
+        if age_gap <= self._age_gap_threshold:
+            return 0.0
+        excess = age_gap - self._age_gap_threshold
+        return min(excess * self._age_relaxation_per_year, self._max_age_relaxation)
+
     def _fuse_decision(
         self,
         score: float,
         decision,
         vlm_same_person: bool | None,
+        age_gap: int = 0,
+        gender_mismatch: bool = False,
     ) -> tuple[bool, float]:
         """Combine cosine score and VLM verdict into final match + confidence.
 
-        Decision logic:
-            score >= 0.60 + quality OK (no VLM) → MATCH
-            score >= 0.60 + quality LOW + VLM:
+        Decision logic (thresholds from config):
+            score >= match_threshold + quality OK (no VLM) → MATCH
+            score >= match_threshold + quality LOW + VLM:
                 VLM says no → NO MATCH
                 VLM unavailable → MATCH (trust the high score)
                 VLM says yes → MATCH
-            0.40–0.60 + VLM says yes (high/medium) → MATCH
-            0.40–0.60 + VLM unavailable → NO MATCH (conservative)
-            0.40–0.60 + VLM says no → NO MATCH
-            < 0.40 → NO MATCH (no VLM)
+            uncertain_low–match_threshold + VLM says yes → MATCH
+            uncertain_low–match_threshold + VLM unavailable → NO MATCH (conservative)
+            uncertain_low–match_threshold + VLM says no → NO MATCH
+            < uncertain_low → NO MATCH (no VLM)
 
-        Confidence formula:
-            base  = cosine_score * 100             (0–100 scale)
-            VLM confirmation adds fixed bonus:     +8 points
-            VLM rejection applies fixed penalty:   -20 points
-            Quality flag reduces by:               -5 points
-            Final clamped to [0.0, 99.0]
+        When age_gap > age_gap_threshold, match_threshold and uncertain_low
+        are relaxed proportionally (see _compute_age_relaxation).
+
+        Confidence adjustments are configurable via config.yaml
+        confidence_adjustments section. Final clamped to [0.0, 99.0].
 
         Returns:
             (match: bool, confidence_pct: float)
         """
-        match_thresh = self.scorer.match_threshold
+        relaxation = self._compute_age_relaxation(age_gap)
+        match_thresh = self.scorer.match_threshold - relaxation
+        uncertain_low = self.scorer.uncertain_low - relaxation
         base_conf = score * 100.0
+
+        if relaxation > 0:
+            logger.info(
+                "Age gap %dyr → threshold relaxed by %.3f (effective: match=%.3f, uncertain_low=%.3f)",
+                age_gap, relaxation, match_thresh, uncertain_low,
+            )
 
         if score >= match_thresh:
             if vlm_same_person is False:
-                # VLM explicitly says no despite high score — reject
                 match = False
-                confidence_pct = base_conf - 20.0
+                confidence_pct = base_conf + self._vlm_reject_high
             else:
                 match = True
-                vlm_bonus = 8.0 if vlm_same_person is True else 0.0
-                quality_penalty = 5.0 if decision.quality_low else 0.0
-                confidence_pct = base_conf + vlm_bonus - quality_penalty
-        elif score >= self.scorer.uncertain_low:
+                vlm_bonus = self._vlm_confirm_bonus if vlm_same_person is True else 0.0
+                if vlm_same_person is True and age_gap > self._age_gap_threshold:
+                    vlm_bonus += self._age_gap_vlm_bonus
+                quality_pen = abs(self._quality_penalty) if decision.quality_low else 0.0
+                confidence_pct = base_conf + vlm_bonus - quality_pen
+        elif score >= uncertain_low:
             if vlm_same_person is True:
                 match = True
-                confidence_pct = base_conf + 8.0
+                age_bonus = self._age_gap_vlm_bonus if age_gap > self._age_gap_threshold else 0.0
+                confidence_pct = base_conf + self._vlm_confirm_bonus + age_bonus
             else:
-                # VLM says no, unavailable, or wasn't invoked — conservative reject
                 match = False
-                confidence_pct = base_conf - 10.0
+                confidence_pct = base_conf + self._vlm_reject_uncertain
         else:
             match = False
             confidence_pct = base_conf
+
+        if gender_mismatch and self._gender_mismatch_penalty != 0.0:
+            confidence_pct += self._gender_mismatch_penalty  # negative value
 
         confidence_pct = max(0.0, min(confidence_pct, 99.0))
         return match, round(confidence_pct, 1)

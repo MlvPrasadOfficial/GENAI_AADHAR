@@ -98,7 +98,7 @@
   │                     STAGE 7: VISION LLM GUARD (optional)                │
   │                     pipeline/vlm_guard.py                                │
   │                     Ollama HTTP API → http://localhost:11434/api/chat    │
-  │                     Model: llava:13b  (llava:7b for speed)              │
+  │                     Model: configurable (default: qwen2.5vl:7b)        │
   │                     Input: both 112×112 aligned crops as base64 JPEG    │
   │                     Prompt: structural face comparison (bone/jaw/eyes)  │
   │                     Output: {same_person, confidence, reasoning}        │
@@ -180,8 +180,8 @@ main.py
 ├──────────────────────────────────────────────────────────────────┤
 │  Similarity     │  NumPy cosine dot product   │  1.26.4           │
 ├──────────────────────────────────────────────────────────────────┤
-│  Vision LLM     │  Ollama (Windows native)    │  0.20.0           │
-│  Guard          │  LLaVA-v1.6                 │  13b              │
+│  Vision LLM     │  Ollama (Windows native)    │  latest            │
+│  Guard          │  Qwen2.5-VL (configurable)  │  7b               │
 │  (optional)     │  HTTP API: localhost:11434  │                   │
 ├──────────────────────────────────────────────────────────────────┤
 │  Image I/O      │  OpenCV                     │  4.10.0.84        │
@@ -206,15 +206,17 @@ if score < 0.40:
 elif score >= 0.60 and not quality_low:
     return MATCH     (no VLM needed — clear acceptance)
 
-else:  # uncertain zone (0.40–0.60) OR high score but low quality
-    vlm = ollama_llava_verify(aadhaar_crop, selfie_crop, score)
+else:  # uncertain zone OR high score but low quality
+    vlm = ollama_vlm_verify(aadhaar_crop, selfie_crop, score)
     
-    if vlm.same_person and vlm.confidence in ("high", "medium"):
-        return MATCH
+    if vlm.same_person is True:
+        return MATCH  (+8 confidence bonus)
+    elif vlm.same_person is False and score >= match_threshold:
+        return NO_MATCH  (-20 confidence penalty)
     elif vlm is None:  # Ollama not running
-        return MATCH if score >= 0.60 else NO_MATCH  # fallback to score
+        return MATCH if score >= match_threshold else NO_MATCH
     else:
-        return NO_MATCH
+        return NO_MATCH  (-10 confidence penalty)
 ```
 
 ---
@@ -227,6 +229,6 @@ else:  # uncertain zone (0.40–0.60) OR high score but low quality
 | Face detection (RetinaFace) | 50–100 ms |
 | ArcFace embedding | 20–50 ms |
 | Cosine similarity | < 1 ms |
-| LLaVA-13b via Ollama | 3–8 sec |
+| VLM (Qwen2.5-VL-7B) via Ollama | 3–8 sec |
 | **Total (no VLM)** | **~0.3–0.6 sec** |
 | **Total (with VLM)** | **~4–9 sec** |

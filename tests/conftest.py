@@ -26,13 +26,24 @@ def sample_config():
         "similarity": {
             "match_threshold": 0.60,
             "uncertain_low": 0.40,
+            "age_gap_threshold": 5,
+            "age_gap_relaxation_per_year": 0.01,
+            "max_age_gap_relaxation": 0.10,
         },
         "vlm_guard": {
             "enabled": True,
             "ollama_url": "http://localhost:11434",
-            "model": "llava:13b",
+            "model": "qwen2.5vl:7b",
             "timeout_s": 30,
             "temperature": 0.1,
+        },
+        "confidence_adjustments": {
+            "vlm_confirmation_bonus": 8.0,
+            "vlm_rejection_above_threshold": -20.0,
+            "vlm_rejection_uncertain": -10.0,
+            "quality_penalty": -5.0,
+            "age_gap_vlm_bonus": 5.0,
+            "gender_mismatch_penalty": 0.0,
         },
     }
 

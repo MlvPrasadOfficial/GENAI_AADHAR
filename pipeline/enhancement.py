@@ -28,6 +28,10 @@ class ImageEnhancer:
             image = enhancer.enhance(image)
     """
 
+    # Max pixels before downscaling prior to enhancement (prevents GPU OOM).
+    # 1536x2048 = ~3.1 MP — safe for 12 GB VRAM with 2x upscale.
+    MAX_ENHANCE_PIXELS = 1536 * 2048
+
     def __init__(self, config: dict):
         cfg = config["enhancement"]
         self.enabled: bool = cfg["enabled"]
@@ -64,11 +68,13 @@ class ImageEnhancer:
             scale=4,
         )
         half = torch.cuda.is_available()
+        if not half:
+            logger.warning("*** GPU NOT AVAILABLE *** — Real-ESRGAN using CPU (FP32). Enhancement will be slow.")
         self._upsampler = RealESRGANer(
             scale=4,
             model_path=str(model_path),
             model=model,
-            tile=0,
+            tile=512,       # tile-based processing to prevent GPU OOM
             tile_pad=10,
             pre_pad=0,
             half=half,
@@ -93,8 +99,26 @@ class ImageEnhancer:
         # 40-100 = moderate, >100 = sharp
         return float(np.clip(lap_var / 100.0, 0.0, 1.0))
 
+    def _downscale_if_needed(self, image: np.ndarray) -> np.ndarray:
+        """Downscale image if it exceeds MAX_ENHANCE_PIXELS to prevent GPU OOM."""
+        h, w = image.shape[:2]
+        pixels = h * w
+        if pixels <= self.MAX_ENHANCE_PIXELS:
+            return image
+
+        scale = (self.MAX_ENHANCE_PIXELS / pixels) ** 0.5
+        new_w, new_h = int(w * scale), int(h * scale)
+        logger.info(
+            "Downscaling %dx%d (%.1f MP) → %dx%d before enhancement",
+            w, h, pixels / 1e6, new_w, new_h,
+        )
+        return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
     def enhance(self, image: np.ndarray) -> np.ndarray:
         """Upscale and restore image using Real-ESRGAN.
+
+        Large images are downscaled first to prevent GPU OOM, then
+        enhanced with tiled processing.
 
         Args:
             image: BGR uint8 numpy array.
@@ -107,6 +131,8 @@ class ImageEnhancer:
         """
         if not self.enabled or self._upsampler is None:
             return image
+
+        image = self._downscale_if_needed(image)
 
         try:
             output, _ = self._upsampler.enhance(image, outscale=self.upscale)
@@ -124,9 +150,17 @@ class ImageEnhancer:
             Tuple of (possibly enhanced image, quality score before enhancement).
         """
         score = self.quality_score(image)
-        if score < self.quality_threshold and self.enabled and self._upsampler is not None:
-            logger.info("Quality %.2f < %.2f — enhancing", score, self.quality_threshold)
-            image = self.enhance(image)
+        if score < self.quality_threshold:
+            if self.enabled and self._upsampler is not None:
+                logger.info("Quality %.2f < %.2f — enhancing", score, self.quality_threshold)
+                image = self.enhance(image)
+            else:
+                logger.warning(
+                    "Quality %.2f < %.2f but enhancement unavailable "
+                    "(enabled=%s, model_loaded=%s)",
+                    score, self.quality_threshold,
+                    self.enabled, self._upsampler is not None,
+                )
         else:
-            logger.info("Quality %.2f — skipping enhancement", score)
+            logger.debug("Quality %.2f — skipping enhancement", score)
         return image, score

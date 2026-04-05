@@ -18,10 +18,22 @@ face:
 similarity:
   match_threshold: 0.60    # >= this = definite match
   uncertain_low: 0.40      # below this = definite no-match
+  age_gap_threshold: 5     # start relaxing thresholds when age gap exceeds this (years)
+  age_gap_relaxation_per_year: 0.01  # lower match_threshold by this per year beyond age_gap_threshold
+  max_age_gap_relaxation: 0.10       # cap total relaxation (threshold never drops below 0.50)
 
 vlm_guard:
   enabled: true
   ollama_url: "http://localhost:11434"
   model: "qwen2.5vl:7b"       # Best face verification accuracy (FaceXBench 2025)
-  timeout_s: 30
+  timeout_s: 120
   temperature: 0.1
+
+# Confidence score adjustments (additive, applied during decision fusion)
+confidence_adjustments:
+  vlm_confirmation_bonus: 8.0        # VLM confirms match
+  vlm_rejection_above_threshold: -20.0  # VLM rejects despite high cosine
+  vlm_rejection_uncertain: -10.0     # VLM rejects in uncertain zone
+  quality_penalty: -5.0              # Low image quality deduction
+  age_gap_vlm_bonus: 5.0             # Extra bonus when VLM confirms AND age_gap > 5yr
+  gender_mismatch_penalty: 0.0       # Disabled by default (InsightFace gender unreliable on printed cards)
