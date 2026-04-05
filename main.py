@@ -27,6 +27,7 @@ from utils.result_logger import (
     create_batch_dir,
     log_batch_result,
     write_batch_summary,
+    write_batch_readme,
 )
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
@@ -150,7 +151,9 @@ def _run_batch(args, config: dict, pipeline: KYCPipelineOrchestrator) -> int:
             any_no_match = True
 
     summary_path = write_batch_summary(batch_dir, results)
+    readme_path = write_batch_readme(batch_dir, results, config=config)
     print(f"\nBatch complete. Summary: {summary_path}")
+    print(f"Report: {readme_path}")
     print(f"Logs: {batch_dir}")
 
     matches = sum(1 for _, _, r in results if r.match)

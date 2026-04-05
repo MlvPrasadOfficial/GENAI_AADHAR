@@ -141,7 +141,87 @@ def log_result(
     lines.append(f"{'=' * 50}")
 
     (run_dir / "result.txt").write_text("\n".join(lines), encoding="utf-8")
+
+    # Also write a README.md for visual reading
+    _write_single_readme(run_dir, result, aadhaar_path, selfie_path, config)
+
     return run_dir
+
+
+def _write_single_readme(
+    run_dir: Path,
+    result,
+    aadhaar_path: str,
+    selfie_path: str,
+    config: dict | None,
+) -> None:
+    """Write a README.md for a single run folder with markdown formatting."""
+    now = datetime.now()
+    status = "MATCH" if result.match else "NO MATCH"
+    if result.error:
+        status = "ERROR"
+
+    md = []
+    md.append(f"# KYC Face Match — {status}")
+    md.append(f"")
+    md.append(f"**Timestamp:** {now.strftime('%Y-%m-%d %H:%M:%S')}  ")
+    md.append(f"**Aadhaar:** {aadhaar_path}  ")
+    md.append(f"**Selfie:** {selfie_path}  ")
+    md.append(f"")
+
+    md.append(f"## Result")
+    md.append(f"")
+    md.append(f"| Metric | Value |")
+    md.append(f"|--------|-------|")
+    md.append(f"| **Result** | {status} |")
+    md.append(f"| **Cosine Score** | {result.cosine_score:.4f} |")
+    md.append(f"| **Confidence** | {result.confidence_pct:.1f}% |")
+    md.append(f"| **Aadhaar Quality** | {result.aadhaar_quality:.2f} |")
+    md.append(f"| **Selfie Quality** | {result.selfie_quality:.2f} |")
+
+    a_age = getattr(result, "aadhaar_age", 0)
+    s_age = getattr(result, "selfie_age", 0)
+    a_g = getattr(result, "aadhaar_gender", "?")
+    s_g = getattr(result, "selfie_gender", "?")
+    md.append(f"| **Aadhaar** | {a_g}, age {a_age} |")
+    md.append(f"| **Selfie** | {s_g}, age {s_age} |")
+    md.append(f"| **Age Gap** | {abs(a_age - s_age)} years |")
+
+    if result.vlm_same_person is not None:
+        md.append(f"| **VLM Verdict** | {'Same person' if result.vlm_same_person else 'Different person'} |")
+    if result.vlm_reasoning and result.vlm_reasoning not in ("N/A", "VLM guard disabled"):
+        md.append(f"| **VLM Reasoning** | {result.vlm_reasoning} |")
+    md.append(f"")
+
+    # Decision trace
+    if config:
+        trace_lines = _build_decision_trace(result, config)
+        md.append(f"## Decision Trace")
+        md.append(f"```")
+        for line in trace_lines:
+            md.append(line)
+        md.append(f"```")
+        md.append(f"")
+
+    # Face crops
+    md.append(f"## Face Crops")
+    md.append(f"| Aadhaar | Selfie |")
+    md.append(f"|---------|--------|")
+    md.append(f"| ![Aadhaar](aadhaar_crop.jpg) | ![Selfie](selfie_crop.jpg) |")
+    md.append(f"")
+
+    # Timings
+    if result.stage_timings:
+        total_ms = sum(result.stage_timings.values())
+        md.append(f"## Timings ({total_ms:.0f}ms total)")
+        md.append(f"| Stage | Time |")
+        md.append(f"|-------|------|")
+        for stage, ms in result.stage_timings.items():
+            md.append(f"| {stage} | {ms:.0f}ms |")
+        md.append(f"| **TOTAL** | **{total_ms:.0f}ms** |")
+        md.append(f"")
+
+    (run_dir / "README.md").write_text("\n".join(md), encoding="utf-8")
 
 
 def _save_face_crops(result, run_dir: Path) -> list[str]:
@@ -402,6 +482,10 @@ def log_batch_result(
     lines.append(f"{'=' * 50}")
 
     (run_dir / "result.txt").write_text("\n".join(lines), encoding="utf-8")
+
+    # Also write a README.md for visual reading
+    _write_single_readme(run_dir, result, aadhaar_path, selfie_path, config)
+
     return run_dir
 
 
@@ -462,3 +546,176 @@ def write_batch_summary(
     summary_path = batch_dir / "summary.txt"
     summary_path.write_text("\n".join(lines), encoding="utf-8")
     return summary_path
+
+
+def write_batch_readme(
+    batch_dir: Path,
+    results: list[tuple[str, str, object]],
+    config: dict | None = None,
+) -> Path:
+    """Write a README.md in the batch folder with a visual markdown summary.
+
+    Includes results table, per-pair details with VLM reasoning, decision
+    traces, pipeline config, and linked face crop images.
+
+    Args:
+        batch_dir: The batch folder from create_batch_dir().
+        results: List of (aadhaar_path, selfie_path, PipelineResult).
+        config: Pipeline config dict for threshold/config display.
+
+    Returns:
+        Path to README.md.
+    """
+    now = datetime.now()
+    matches = sum(1 for _, _, r in results if r.match)
+    total = len(results)
+
+    md = []
+    md.append(f"# Aadhaar KYC Face Matching — Batch Report")
+    md.append(f"")
+    md.append(f"**Timestamp:** {now.strftime('%Y-%m-%d %H:%M:%S')}  ")
+    md.append(f"**Total pairs:** {total}  ")
+    md.append(f"**Matches:** {matches}/{total}  ")
+    md.append(f"**Pipeline version:** v2  ")
+    md.append(f"")
+
+    # --- Results Table ---
+    md.append(f"## Results Summary")
+    md.append(f"")
+    md.append(f"| # | Aadhaar | Selfie | Result | Cosine | Confidence | Aadhaar Age | Selfie Age | Age Gap | VLM |")
+    md.append(f"|---|---------|--------|--------|--------|------------|-------------|------------|---------|-----|")
+
+    for i, (aadhaar_path, selfie_path, result) in enumerate(results, 1):
+        a_name = Path(aadhaar_path).name
+        s_name = Path(selfie_path).name
+        status = "**MATCH**" if result.match else "NO MATCH"
+        if result.error:
+            status = "ERROR"
+        a_age = getattr(result, "aadhaar_age", 0)
+        s_age = getattr(result, "selfie_age", 0)
+        age_gap = abs(a_age - s_age)
+        a_g = getattr(result, "aadhaar_gender", "?")
+        s_g = getattr(result, "selfie_gender", "?")
+        vlm = "---"
+        if result.vlm_same_person is True:
+            vlm = "Confirmed"
+        elif result.vlm_same_person is False:
+            vlm = "Rejected"
+        elif result.vlm_same_person is None and getattr(result, "vlm_reasoning", None):
+            vlm = "N/A"
+
+        gender_flag = " :warning:" if a_g != s_g and a_g != "unknown" and s_g != "unknown" else ""
+        md.append(
+            f"| {i} | {a_name} | {s_name} | {status} | {result.cosine_score:.4f} "
+            f"| {result.confidence_pct:.1f}% | {a_g} age {a_age} | {s_g} age {s_age} "
+            f"| {age_gap}yr | {vlm}{gender_flag} |"
+        )
+
+    md.append(f"")
+
+    # --- Per-Pair Details ---
+    md.append(f"## Per-Pair Details")
+    md.append(f"")
+
+    for i, (aadhaar_path, selfie_path, result) in enumerate(results, 1):
+        a_name = Path(aadhaar_path).name
+        s_name = Path(selfie_path).name
+        a_stem = Path(aadhaar_path).stem
+        s_stem = Path(selfie_path).stem
+        status_tag = "MATCH" if result.match else "NO_MATCH"
+        if result.error:
+            status_tag = "ERROR"
+        pair_folder = f"{a_stem}_vs_{s_stem}_{status_tag}"
+
+        status_emoji = "+" if result.match else "-"
+        md.append(f"### {i}. {a_name} vs {s_name}")
+        md.append(f"")
+
+        md.append(f"| Metric | Value |")
+        md.append(f"|--------|-------|")
+        md.append(f"| **Result** | {'MATCH' if result.match else 'NO MATCH'} |")
+        md.append(f"| **Cosine Score** | {result.cosine_score:.4f} |")
+        md.append(f"| **Confidence** | {result.confidence_pct:.1f}% |")
+        md.append(f"| **Aadhaar Quality** | {result.aadhaar_quality:.2f} |")
+        md.append(f"| **Selfie Quality** | {result.selfie_quality:.2f} |")
+
+        a_age = getattr(result, "aadhaar_age", 0)
+        s_age = getattr(result, "selfie_age", 0)
+        a_g = getattr(result, "aadhaar_gender", "?")
+        s_g = getattr(result, "selfie_gender", "?")
+        md.append(f"| **Aadhaar Demographics** | {a_g}, age {a_age} |")
+        md.append(f"| **Selfie Demographics** | {s_g}, age {s_age} |")
+        md.append(f"| **Age Gap** | {abs(a_age - s_age)} years |")
+
+        if a_g != s_g and a_g != "unknown" and s_g != "unknown":
+            md.append(f"| **Gender** | MISMATCH |")
+        else:
+            md.append(f"| **Gender** | Consistent |")
+
+        if result.vlm_same_person is not None:
+            md.append(f"| **VLM Verdict** | {'Same person' if result.vlm_same_person else 'Different person'} |")
+        if result.vlm_reasoning and result.vlm_reasoning not in ("N/A", "VLM guard disabled"):
+            md.append(f"| **VLM Reasoning** | {result.vlm_reasoning} |")
+
+        md.append(f"")
+
+        # Decision trace
+        if config:
+            trace_lines = _build_decision_trace(result, config)
+            md.append(f"<details><summary>Decision Trace</summary>")
+            md.append(f"")
+            md.append(f"```")
+            for line in trace_lines:
+                md.append(line)
+            md.append(f"```")
+            md.append(f"</details>")
+            md.append(f"")
+
+        # Timings
+        if result.stage_timings:
+            total_ms = sum(result.stage_timings.values())
+            md.append(f"<details><summary>Timings (total {total_ms:.0f}ms)</summary>")
+            md.append(f"")
+            md.append(f"| Stage | Time |")
+            md.append(f"|-------|------|")
+            for stage, ms in result.stage_timings.items():
+                md.append(f"| {stage} | {ms:.0f}ms |")
+            md.append(f"| **TOTAL** | **{total_ms:.0f}ms** |")
+            md.append(f"</details>")
+            md.append(f"")
+
+        # Face crop links
+        md.append(f"**Face Crops:** [{pair_folder}/aadhaar_crop.jpg]({pair_folder}/aadhaar_crop.jpg) | "
+                   f"[{pair_folder}/selfie_crop.jpg]({pair_folder}/selfie_crop.jpg)")
+        md.append(f"")
+        md.append(f"---")
+        md.append(f"")
+
+    # --- Pipeline Config ---
+    md.append(f"## Pipeline Configuration")
+    md.append(f"")
+    if config:
+        sim = config.get("similarity", {})
+        preproc = config.get("preprocessing", {})
+        face = config.get("face", {})
+        vlm = config.get("vlm_guard", {})
+        ca = config.get("confidence_adjustments", {})
+
+        md.append(f"| Setting | Value |")
+        md.append(f"|---------|-------|")
+        md.append(f"| Match threshold | {sim.get('match_threshold', 0.60)} |")
+        md.append(f"| Uncertain zone | {sim.get('uncertain_low', 0.40)} - {sim.get('match_threshold', 0.60)} |")
+        md.append(f"| Age gap threshold | {sim.get('age_gap_threshold', 5)} years |")
+        md.append(f"| Max age relaxation | {sim.get('max_age_gap_relaxation', 0.10)} |")
+        md.append(f"| CLAHE | {'Enabled' if preproc.get('aadhaar_clahe') else 'Disabled'} (clip={preproc.get('clahe_clip_limit', 2.0)}, tile={preproc.get('clahe_tile_size', 8)}) |")
+        md.append(f"| Flip augment (TTA) | {'Enabled' if face.get('flip_augment') else 'Disabled'} |")
+        md.append(f"| Dual-path | {'Enabled' if preproc.get('dual_path') else 'Disabled'} |")
+        md.append(f"| Grayscale normalize | {'Enabled' if preproc.get('grayscale_normalize') else 'Disabled'} |")
+        md.append(f"| VLM model | {vlm.get('model', 'N/A')} |")
+        md.append(f"| VLM confirmation bonus | +{ca.get('vlm_confirmation_bonus', 8.0)} |")
+        md.append(f"| Age gap VLM bonus | +{ca.get('age_gap_vlm_bonus', 5.0)} |")
+    md.append(f"")
+
+    readme_path = batch_dir / "README.md"
+    readme_path.write_text("\n".join(md), encoding="utf-8")
+    return readme_path
