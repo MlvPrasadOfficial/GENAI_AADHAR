@@ -210,6 +210,14 @@ class SimilarityScorer:
         "landmark": 0.25,
     }
 
+    # Adaptive threshold tiers: quality_min → (match_threshold, uncertain_low)
+    DEFAULT_QUALITY_TIERS = [
+        # (min_quality, match_thresh, uncertain_low)
+        (0.7, 0.65, 0.45),   # high quality: stricter thresholds
+        (0.4, 0.60, 0.40),   # medium quality: standard thresholds
+        (0.0, 0.55, 0.35),   # low quality: relaxed thresholds
+    ]
+
     def __init__(self, config: dict):
         sim_cfg = config["similarity"]
         self.match_threshold: float = sim_cfg["match_threshold"]
@@ -217,6 +225,11 @@ class SimilarityScorer:
         self.fusion_weights: dict[str, float] = sim_cfg.get(
             "fusion_weights", self.DEFAULT_WEIGHTS
         )
+        # Adaptive thresholds
+        self.adaptive_thresholds: bool = sim_cfg.get("adaptive_thresholds", False)
+        self.quality_tiers: list = sim_cfg.get("quality_tiers", self.DEFAULT_QUALITY_TIERS)
+        # Quality-weighted fusion
+        self.quality_weighted_fusion: bool = sim_cfg.get("quality_weighted_fusion", False)
 
     def cosine_similarity(self, e1: np.ndarray, e2: np.ndarray) -> float:
         """Compute cosine similarity between two L2-normalized embeddings.
@@ -238,23 +251,81 @@ class SimilarityScorer:
             raise ValueError(f"Embedding shape mismatch: {e1.shape} vs {e2.shape}")
         return float(np.clip(np.dot(e1, e2), 0.0, 1.0))
 
-    def decide(self, score: float, quality_low: bool = False) -> SimilarityDecision:
+    def get_adaptive_thresholds(self, quality: float) -> tuple[float, float]:
+        """Return (match_threshold, uncertain_low) adapted to image quality.
+
+        Higher quality images get stricter thresholds (fewer false positives),
+        lower quality images get relaxed thresholds (fewer false negatives).
+
+        Args:
+            quality: Minimum quality score of the two images, in [0, 1].
+
+        Returns:
+            (match_threshold, uncertain_low) for this quality level.
+        """
+        if not self.adaptive_thresholds:
+            return self.match_threshold, self.uncertain_low
+
+        for min_q, mt, ul in self.quality_tiers:
+            if quality >= min_q:
+                return mt, ul
+        return self.match_threshold, self.uncertain_low
+
+    def get_quality_adjusted_weights(
+        self, quality: float,
+    ) -> dict[str, float]:
+        """Return fusion weights adjusted for image quality.
+
+        Low quality → increase landmark weight (bone structure is stable),
+        decrease SSIM weight (noisy images produce unreliable SSIM).
+
+        Args:
+            quality: Minimum quality score of the two images, in [0, 1].
+
+        Returns:
+            Adjusted fusion weight dict.
+        """
+        if not self.quality_weighted_fusion:
+            return self.fusion_weights
+
+        w = dict(self.fusion_weights)
+
+        if quality < 0.3:
+            # Very low quality: rely heavily on cosine + landmarks
+            w["cosine"] = 0.50
+            w["landmark"] = 0.35
+            w["l2"] = 0.10
+            w["ssim"] = 0.05
+        elif quality < 0.5:
+            # Low-medium quality: boost landmarks slightly
+            w["cosine"] = 0.50
+            w["landmark"] = 0.30
+            w["l2"] = 0.10
+            w["ssim"] = 0.10
+
+        return w
+
+    def decide(self, score: float, quality_low: bool = False,
+               quality_score: float = 1.0) -> SimilarityDecision:
         """Apply threshold decision tree.
 
         Args:
             score: Cosine similarity from cosine_similarity().
             quality_low: True if either input image had low quality score.
+            quality_score: Min quality of the two images for adaptive thresholds.
 
         Returns:
             SimilarityDecision with verdict, whether VLM is needed, etc.
         """
-        if score >= self.match_threshold:
+        match_thresh, unc_low = self.get_adaptive_thresholds(quality_score)
+
+        if score >= match_thresh:
             if quality_low:
                 # High score but bad image quality — verify with VLM
                 return SimilarityDecision("match", score, needs_vlm=True, quality_low=True)
             return SimilarityDecision("match", score, needs_vlm=False, quality_low=False)
 
-        if score >= self.uncertain_low:
+        if score >= unc_low:
             # Uncertain zone — must invoke VLM
             return SimilarityDecision("uncertain", score, needs_vlm=True, quality_low=quality_low)
 
@@ -282,6 +353,7 @@ class SimilarityScorer:
         self,
         face1,
         face2,
+        quality: float = 1.0,
     ) -> MultiMetricResult:
         """Compute all similarity metrics between two FaceResults.
 
@@ -316,8 +388,8 @@ class SimilarityScorer:
         if pose1 is not None and pose2 is not None:
             pose_diff = float(np.linalg.norm(pose1 - pose2))
 
-        # 6. Fused score (weighted combination)
-        w = self.fusion_weights
+        # 6. Fused score (weighted combination, quality-adjusted)
+        w = self.get_quality_adjusted_weights(quality)
         total_weight = 0.0
         fused = 0.0
 
@@ -357,3 +429,6 @@ class SimilarityScorer:
             fused_score=fused_score,
             details=details,
         )
+
+
+

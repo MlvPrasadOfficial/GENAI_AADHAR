@@ -54,6 +54,8 @@ class FaceProcessor:
         self.det_thresh_fallback: float = cfg.get("det_thresh_fallback", 0.5)
         self.ctx_id: int = cfg["ctx_id"]
         self.flip_augment: bool = cfg.get("flip_augment", False)
+        self.ensemble_augment: bool = cfg.get("ensemble_augment", False)
+        self.ensemble_count: int = cfg.get("ensemble_count", 4)
         self._app = None
         self._rec_model = None  # cached recognition model for TTA
 
@@ -145,8 +147,14 @@ class FaceProcessor:
 
         aligned = norm_crop(image, best.kps, image_size=112)
 
-        # Flip-augmented embedding (TTA): average original + horizontally flipped
-        if self.flip_augment:
+        # Embedding ensemble: multiple augmentations averaged for robustness
+        if self.ensemble_augment:
+            ensemble_emb = self._get_ensemble_embedding(aligned, embedding)
+            if ensemble_emb is not None:
+                embedding = ensemble_emb
+                logger.debug("%s: ensemble embedding from %d augmentations", source, self.ensemble_count)
+        elif self.flip_augment:
+            # Simple flip TTA (subset of ensemble)
             flipped_emb = self._get_flip_embedding(aligned)
             if flipped_emb is not None:
                 embedding = (embedding + flipped_emb) / 2.0
@@ -207,6 +215,61 @@ class FaceProcessor:
         if norm < 1e-6:
             return None
         return emb / norm
+
+    def _get_ensemble_embedding(
+        self, aligned_crop: np.ndarray, base_embedding: np.ndarray,
+    ) -> np.ndarray | None:
+        """Compute ensemble embedding from multiple augmentations.
+
+        Augmentations: original, horizontal flip, slight brightness shifts,
+        minor crop jitter. All embeddings averaged and re-normalized.
+
+        Args:
+            aligned_crop: 112x112 BGR uint8 aligned face image.
+            base_embedding: Original L2-normalized embedding.
+
+        Returns:
+            Averaged L2-normalized embedding, or None if rec model unavailable.
+        """
+        rec = self._find_rec_model()
+        if rec is None:
+            return None
+
+        embeddings = [base_embedding]
+
+        augmentations = []
+        # 1. Horizontal flip
+        augmentations.append(cv2.flip(aligned_crop, 1))
+
+        # 2. Brightness +10%
+        bright = cv2.convertScaleAbs(aligned_crop, alpha=1.1, beta=5)
+        augmentations.append(bright)
+
+        # 3. Brightness -10%
+        dark = cv2.convertScaleAbs(aligned_crop, alpha=0.9, beta=-5)
+        augmentations.append(dark)
+
+        # 4. Slight Gaussian blur (simulates focus variation)
+        if self.ensemble_count > 4:
+            blurred = cv2.GaussianBlur(aligned_crop, (3, 3), 0.5)
+            augmentations.append(blurred)
+
+        for aug in augmentations[:self.ensemble_count - 1]:
+            try:
+                feat = rec.get_feat(aug)
+                emb = feat.flatten().astype(np.float32)
+                norm = np.linalg.norm(emb)
+                if norm > 1e-6:
+                    embeddings.append(emb / norm)
+            except Exception:
+                continue
+
+        if len(embeddings) < 2:
+            return None
+
+        avg = np.mean(embeddings, axis=0)
+        avg = avg / np.linalg.norm(avg)
+        return avg.astype(np.float32)
 
     def _find_rec_model(self):
         """Locate the ArcFace recognition model within FaceAnalysis."""

@@ -29,6 +29,8 @@ similarity:
   age_gap_threshold: 5     # start relaxing thresholds when age gap exceeds this (years)
   age_gap_relaxation_per_year: 0.01  # lower match_threshold by this per year beyond age_gap_threshold
   max_age_gap_relaxation: 0.10       # cap total relaxation (threshold never drops below 0.50)
+  adaptive_thresholds: false  # enable quality-tier adaptive thresholds
+  quality_weighted_fusion: false  # adjust fusion weights based on image quality
 
 vlm_guard:
   enabled: true
@@ -36,6 +38,42 @@ vlm_guard:
   model: "qwen2.5vl:7b"       # Best face verification accuracy (FaceXBench 2025)
   timeout_s: 300
   temperature: 0.1
+
+# AdaFace — quality-adaptive second model for score fusion
+adaface:
+  enabled: false
+  model_path: "models/adaface/adaface_ir101_webface12m.ckpt"
+  fusion_weight: 0.3   # weight for AdaFace score in fusion (0.3 = 70% ArcFace + 30% AdaFace)
+
+# Score normalization — calibrates raw cosine against an impostor cohort
+score_norm:
+  enabled: false
+  cohort_path: "models/snorm_cohort.npy"
+  cohort_size: 100
+
+# Confidence calibration — Platt scaling for meaningful probability output
+calibration:
+  enabled: false
+  platt_a: 15.0     # sigmoid steepness
+  platt_b: -7.5     # sigmoid offset
+
+# Crop-level face restoration after detection
+crop_restore:
+  enabled: false
+  backend: "bilateral"          # "bilateral" (always available) or "gfpgan" (needs model)
+  bilateral_d: 5                # bilateral filter diameter
+  bilateral_sigma_color: 50.0   # color domain sigma
+  bilateral_sigma_space: 50.0   # spatial domain sigma
+  gfpgan_model_path: "models/gfpgan/GFPGANv1.4.pth"
+
+# Embedding cache — avoids re-processing same images in batch mode
+cache:
+  max_size: 64
+
+# Batch processing options
+batch:
+  parallel: false   # enable parallel pair processing
+  max_workers: 2    # thread count for parallel mode
 
 # Confidence score adjustments (additive, applied during decision fusion)
 confidence_adjustments:

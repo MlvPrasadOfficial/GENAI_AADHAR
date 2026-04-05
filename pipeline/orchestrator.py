@@ -11,10 +11,15 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from pipeline.adaface import AdaFaceModel
+from pipeline.confidence_calibrator import ConfidenceCalibrator
+from pipeline.crop_restore import CropRestorer
 from pipeline.enhancement import ImageEnhancer
 from pipeline.face_processor import FaceProcessor
+from pipeline.score_norm import SNormCalibrator
 from pipeline.similarity import SimilarityScorer
 from pipeline.vlm_guard import VLMGuard
+from utils.embedding_cache import EmbeddingCache
 from utils.exceptions import NoFaceDetectedError, PipelineError
 from utils.image_utils import apply_clahe, bytes_to_bgr, to_grayscale_bgr
 
@@ -48,6 +53,10 @@ class PipelineResult:
     landmark_score: float = -1.0    # -1 = unavailable
     pose_diff: float = -1.0         # -1 = unavailable
     fused_score: float = 0.0
+    snorm_score: float | None = None       # S-norm calibrated score (None = disabled)
+    calibrated_confidence: float | None = None  # Platt-calibrated confidence (None = disabled)
+    cache_hit_aadhaar: bool = False
+    cache_hit_selfie: bool = False
     error: str | None = None        # non-None if pipeline failed
 
 
@@ -66,6 +75,13 @@ class KYCPipelineOrchestrator:
         self.processor = FaceProcessor(config)
         self.scorer = SimilarityScorer(config)
         self.vlm = VLMGuard(config)
+        self.snorm = SNormCalibrator(config)
+        self.calibrator = ConfidenceCalibrator(config)
+        self.crop_restorer = CropRestorer(config)
+        self.adaface = AdaFaceModel(config)
+        self.embedding_cache = EmbeddingCache(
+            max_size=config.get("cache", {}).get("max_size", 64)
+        )
 
         # Configurable confidence adjustments
         ca = config.get("confidence_adjustments", {})
@@ -95,6 +111,9 @@ class KYCPipelineOrchestrator:
         logger.info("Loading pipeline models...")
         self.enhancer.load()
         self.processor.load()
+        self.crop_restorer.load()
+        self.adaface.load()
+        self.snorm.load_cohort()
         logger.info("Pipeline ready")
 
     def run(self, aadhaar_bytes: bytes, selfie_bytes: bytes) -> PipelineResult:
@@ -152,11 +171,44 @@ class KYCPipelineOrchestrator:
             quality_low = aadhaar_post_q < self.enhancer.quality_threshold or \
                           selfie_post_q < self.enhancer.quality_threshold
 
-            # --- Stage 3: Face detection + alignment + embedding ---
+            # --- Stage 3: Face detection + alignment + embedding (with caching) ---
             t0 = time.perf_counter()
-            aadhaar_face = self.processor.process(aadhaar_img, source="aadhaar")
-            selfie_face = self.processor.process(selfie_img, source="selfie")
+            cache_hit_a = cache_hit_s = False
+            aadhaar_hash = self.embedding_cache.hash_key(aadhaar_bytes)
+            selfie_hash = self.embedding_cache.hash_key(selfie_bytes)
+
+            cached_a = self.embedding_cache.get(aadhaar_hash)
+            if cached_a is not None:
+                aadhaar_face = cached_a
+                cache_hit_a = True
+            else:
+                aadhaar_face = self.processor.process(aadhaar_img, source="aadhaar")
+                self.embedding_cache.put(aadhaar_hash, aadhaar_face)
+
+            cached_s = self.embedding_cache.get(selfie_hash)
+            if cached_s is not None:
+                selfie_face = cached_s
+                cache_hit_s = True
+            else:
+                selfie_face = self.processor.process(selfie_img, source="selfie")
+                self.embedding_cache.put(selfie_hash, selfie_face)
+
             timings["face_processing_ms"] = _elapsed_ms(t0)
+            if cache_hit_a or cache_hit_s:
+                logger.info("Cache: aadhaar=%s selfie=%s",
+                            "HIT" if cache_hit_a else "MISS",
+                            "HIT" if cache_hit_s else "MISS")
+
+            # --- Stage 3b: Crop-level restoration ---
+            if self.crop_restorer.enabled:
+                t0 = time.perf_counter()
+                aadhaar_face.aligned_crop = self.crop_restorer.restore(
+                    aadhaar_face.aligned_crop,
+                )
+                selfie_face.aligned_crop = self.crop_restorer.restore(
+                    selfie_face.aligned_crop,
+                )
+                timings["crop_restore_ms"] = _elapsed_ms(t0)
 
             # --- Stage 4: Cosine similarity ---
             t0 = time.perf_counter()
@@ -190,10 +242,38 @@ class KYCPipelineOrchestrator:
                 except NoFaceDetectedError:
                     logger.debug("Dual-path: no face in original Aadhaar, using preprocessed")
 
-            # --- Stage 4c: Multi-metric similarity ---
-            metrics = self.scorer.compute_all_metrics(aadhaar_face, selfie_face)
+            # --- Stage 4c: AdaFace second model fusion ---
+            if self.adaface.available:
+                t_af = time.perf_counter()
+                ada_emb_a = self.adaface.get_embedding(aadhaar_face.aligned_crop)
+                ada_emb_s = self.adaface.get_embedding(selfie_face.aligned_crop)
+                if ada_emb_a is not None and ada_emb_s is not None:
+                    ada_score = float(np.clip(np.dot(ada_emb_a, ada_emb_s), 0.0, 1.0))
+                    old_score = score
+                    score = self.adaface.fuse_scores(score, ada_score)
+                    timings["adaface_ms"] = _elapsed_ms(t_af)
+                    logger.info(
+                        "AdaFace: ada=%.4f arcface=%.4f → fused=%.4f",
+                        ada_score, old_score, score,
+                    )
 
-            decision = self.scorer.decide(score, quality_low=quality_low)
+            # --- Stage 4d: S-norm score calibration ---
+            snorm_score = None
+            if self.snorm.available:
+                snorm_score = self.snorm.normalize(
+                    aadhaar_face.embedding, selfie_face.embedding, score,
+                )
+                logger.info("S-norm: raw=%.4f → normalized=%.4f", score, snorm_score)
+
+            # --- Stage 4d: Multi-metric similarity ---
+            min_quality = min(aadhaar_post_q, selfie_post_q)
+            metrics = self.scorer.compute_all_metrics(
+                aadhaar_face, selfie_face, quality=min_quality,
+            )
+
+            decision = self.scorer.decide(
+                score, quality_low=quality_low, quality_score=min_quality,
+            )
             timings["similarity_ms"] = _elapsed_ms(t0)
 
             logger.info(
@@ -232,6 +312,13 @@ class KYCPipelineOrchestrator:
                 age_gap=age_gap, gender_mismatch=gender_mismatch,
             )
 
+            # --- Stage 6b: Confidence calibration ---
+            calibrated_conf = None
+            if self.calibrator.enabled:
+                quality_factor = min_quality / max(self.enhancer.quality_threshold, 0.01)
+                quality_factor = min(quality_factor, 1.0)
+                calibrated_conf = self.calibrator.calibrate(score, quality_factor)
+
             return PipelineResult(
                 match=match,
                 confidence_pct=confidence_pct,
@@ -255,6 +342,10 @@ class KYCPipelineOrchestrator:
                 landmark_score=metrics.landmark_score,
                 pose_diff=metrics.pose_diff,
                 fused_score=metrics.fused_score,
+                snorm_score=snorm_score,
+                calibrated_confidence=calibrated_conf,
+                cache_hit_aadhaar=cache_hit_a,
+                cache_hit_selfie=cache_hit_s,
             )
 
         except NoFaceDetectedError as e:

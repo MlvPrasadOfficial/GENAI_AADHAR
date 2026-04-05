@@ -25,12 +25,17 @@ python main.py --batch pairs.csv --verbose
 2. `pipeline/enhancement.py` — Real-ESRGAN upscale (skipped if quality >= 0.4; warns if unavailable)
 2b. `utils/image_utils.py` — CLAHE contrast normalization for Aadhaar card images (configurable)
 2c. `utils/image_utils.py` — Optional grayscale normalization (removes color domain gap between printed/live)
-3. `pipeline/face_processor.py` — InsightFace buffalo_l: detect → align → 512-d ArcFace embed (multi-face warning, GPU check, flip-augmented TTA)
-4. `pipeline/similarity.py` — Cosine similarity + threshold decision (typed `Literal` verdicts)
+3. `pipeline/face_processor.py` — InsightFace buffalo_l: detect → align → 512-d ArcFace embed (multi-face warning, GPU check, flip/ensemble TTA)
+3b. `pipeline/crop_restore.py` — Optional crop-level restoration (bilateral filter or GFPGAN)
+4. `pipeline/similarity.py` — Cosine + L2 + SSIM + landmark geometry + fused score, adaptive thresholds
 4b. `pipeline/orchestrator.py` — Dual-path: compare original vs preprocessed Aadhaar, keep higher cosine score
+4c. `pipeline/adaface.py` — Optional AdaFace second model with score fusion
+4d. `pipeline/score_norm.py` — S-norm score calibration against impostor cohort
 5. `pipeline/vlm_guard.py` — Ollama VLM guard (URL-validated, strict JSON parsing, age-conditioned prompting)
 6. `pipeline/orchestrator.py` — Wires all stages, age-gated thresholds, configurable confidence adjustments
+6b. `pipeline/confidence_calibrator.py` — Platt scaling for calibrated confidence probabilities
 7. `utils/result_logger.py` — Per-run log folder with hash-based deduplication and decision trace
+8. `utils/embedding_cache.py` — LRU embedding cache (skips reprocessing same images in batch)
 
 ## Key Design Decisions
 | Aspect | Decision | Reason |
@@ -47,6 +52,16 @@ python main.py --batch pairs.csv --verbose
 | Flip augment (TTA) | Horizontal flip + average embedding | Reduces noise in ArcFace embeddings, improves cross-pose robustness |
 | Dual-path embedding | Original vs preprocessed, keep best | Catches cases where enhancement/CLAHE hurts recognition |
 | Grayscale normalize | Optional, removes color domain gap | Eliminates print color cast differences (experimental, off by default) |
+| Multi-metric fusion | Cosine 55% + Landmark 25% + L2 10% + SSIM 10% | Multiple signals reduce single-metric noise |
+| Adaptive thresholds | Quality-tier based (high/medium/low) | Stricter for good images, relaxed for poor |
+| Quality-weighted fusion | Dynamic weights by quality score | Low quality → more weight on bone structure |
+| S-norm calibration | Impostor cohort z-score normalization | Quality-independent calibrated scores |
+| Confidence calibration | Platt scaling (sigmoid mapping) | Meaningful probability percentages |
+| Crop restoration | Bilateral filter on 112x112 crops | Denoise without identity drift |
+| Embedding cache | LRU by SHA-256 hash of image bytes | Avoids redundant processing in batch mode |
+| Embedding ensemble | Multi-augmentation TTA (flip+brightness+blur) | More robust than single-augmentation |
+| AdaFace second model | Quality-adaptive face recognition | Cross-validates with ArcFace (optional) |
+| Parallel batch | ThreadPoolExecutor for concurrent pairs | Faster batch processing |
 
 ## Similarity Thresholds
 - `cosine_score >= match_threshold (0.60)` → **MATCH** (skip VLM unless quality is low)
@@ -118,14 +133,15 @@ Ensure these are in system PATH:
 
 ## Testing
 ```bash
-pytest tests/ -v -m "not integration"        # all unit tests (202 tests, no GPU needed)
-pytest tests/test_similarity.py -v           # similarity only (43 tests)
+pytest tests/ -v -m "not integration"        # all unit tests (238 tests, no GPU needed)
+pytest tests/test_similarity.py -v           # similarity + L2 + SSIM + landmarks + fusion (43 tests)
+pytest tests/test_new_features.py -v         # cache, S-norm, calibrator, crop restore, adaptive, AdaFace (36 tests)
 pytest tests/test_config_loader.py -v        # config validation (24 tests)
 pytest tests/test_vlm_guard.py -v            # VLM parsing + URL + age prompt (25 tests)
 pytest tests/test_image_utils.py -v          # image I/O + input validation + CLAHE + grayscale + dimensions (28 tests)
 pytest tests/test_result_logger.py -v        # audit log + age-gap trace (11 tests)
 pytest tests/test_enhancement.py -v          # quality scoring + downscale (15 tests)
-pytest tests/test_face_processor.py -v       # face detection + multi-face + flip augment (15 tests)
+pytest tests/test_face_processor.py -v       # face detection + multi-face + flip/ensemble augment (15 tests)
 pytest tests/test_orchestrator_unit.py -v    # decision fusion + age relaxation + VLM bonus + preprocessing (33 tests)
 pytest tests/test_batch_logging.py -v        # batch logging (8 tests)
 pytest tests/test_pipeline.py -v -m integration  # needs models + GPU
@@ -133,20 +149,25 @@ pytest tests/test_pipeline.py -v -m integration  # needs models + GPU
 
 ## File Map
 ```
-main.py                     CLI entry point (single + batch mode, exit codes: 0=MATCH, 1=NO MATCH, 2=ERROR)
-config.yaml                 All tunable parameters (thresholds, age-gap, confidence adjustments)
-pipeline/orchestrator.py    Main pipeline runner (age-gated thresholds, dual-path, configurable confidence fusion)
-pipeline/enhancement.py     Real-ESRGAN wrapper (GPU warning, warns when unavailable)
-pipeline/face_processor.py  InsightFace wrapper (multi-face warning, GPU check, flip-augmented TTA)
-pipeline/similarity.py      Cosine + threshold logic (Literal-typed verdicts)
-pipeline/vlm_guard.py       Ollama VLM HTTP client (age-conditioned prompting, strict JSON parsing)
-utils/image_utils.py        EXIF, BGR/RGB, base64, CLAHE, grayscale, dimension validation
-utils/config_loader.py      YAML config loader (comprehensive validation incl. age-gap constraints)
-utils/result_logger.py      Per-run log folders with hash dedup, decision trace, batch logging
-utils/exceptions.py         Custom exceptions
-scripts/download_models.py  Model weight downloader
-models/                     Downloaded weights (gitignored)
-tests/                      174 unit tests across 11 test files
+main.py                           CLI entry point (single + batch + parallel mode)
+config.yaml                       All tunable parameters (thresholds, features, adjustments)
+pipeline/orchestrator.py          Main pipeline runner (caching, crop restore, S-norm, calibration)
+pipeline/enhancement.py           Real-ESRGAN wrapper (GPU warning, warns when unavailable)
+pipeline/face_processor.py        InsightFace wrapper (flip/ensemble TTA, multi-face warning)
+pipeline/similarity.py            Cosine + L2 + SSIM + landmarks + fused score, adaptive thresholds
+pipeline/vlm_guard.py             Ollama VLM HTTP client (age-conditioned prompting)
+pipeline/score_norm.py            S-norm score calibration (impostor cohort z-normalization)
+pipeline/confidence_calibrator.py Platt scaling confidence calibration
+pipeline/crop_restore.py          Crop-level face restoration (bilateral/GFPGAN)
+pipeline/adaface.py               AdaFace second model integration (optional)
+utils/image_utils.py              EXIF, BGR/RGB, base64, CLAHE, grayscale, dimensions
+utils/config_loader.py            YAML config loader with validation
+utils/result_logger.py            Per-run log folders with decision trace, batch README
+utils/embedding_cache.py          LRU embedding cache by image hash
+utils/exceptions.py               Custom exceptions
+scripts/download_models.py        Model weight downloader
+models/                           Downloaded weights (gitignored)
+tests/                            238 unit tests across 12 test files
 ```
 
 ## Known Pitfalls

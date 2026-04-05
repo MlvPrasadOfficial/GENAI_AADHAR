@@ -17,6 +17,7 @@ import csv
 import json
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from pathlib import Path
 
@@ -88,6 +89,18 @@ def _run_single(args, config: dict, pipeline: KYCPipelineOrchestrator) -> int:
     return 0 if result.match else 1
 
 
+def _print_pair_result(i: int, total: int, a_path: Path, s_path: Path, result) -> None:
+    """Print a single pair result line (used by both serial and parallel batch)."""
+    if result.error:
+        print(f"  [{i}/{total}] {a_path.name} vs {s_path.name} ... ERROR: {result.error}")
+    elif result.match:
+        print(f"  [{i}/{total}] {a_path.name} vs {s_path.name} ... "
+              f"MATCH (cosine={result.cosine_score:.4f}, conf={result.confidence_pct:.1f}%)")
+    else:
+        print(f"  [{i}/{total}] {a_path.name} vs {s_path.name} ... "
+              f"NO MATCH (cosine={result.cosine_score:.4f}, conf={result.confidence_pct:.1f}%)")
+
+
 def _run_batch(args, config: dict, pipeline: KYCPipelineOrchestrator) -> int:
     """Run pipeline for all pairs in a CSV file. Returns exit code."""
     csv_path = args.batch
@@ -128,27 +141,57 @@ def _run_batch(args, config: dict, pipeline: KYCPipelineOrchestrator) -> int:
         _validate_image_path("Aadhaar", a_path)
         _validate_image_path("Selfie", s_path)
 
-    print(f"Batch mode: {len(pairs)} pairs to process")
+    parallel = config.get("batch", {}).get("parallel", False)
+    max_workers = config.get("batch", {}).get("max_workers", 2)
+
+    print(f"Batch mode: {len(pairs)} pairs to process" +
+          (f" (parallel, {max_workers} workers)" if parallel else ""))
 
     batch_dir = create_batch_dir()
     results = []
     any_error = False
     any_no_match = False
 
-    for i, (a_path, s_path) in enumerate(pairs, 1):
-        print(f"  [{i}/{len(pairs)}] {a_path.name} vs {s_path.name} ... ", end="", flush=True)
-        result = pipeline.run(a_path.read_bytes(), s_path.read_bytes())
-        log_batch_result(result, str(a_path), str(s_path), batch_dir, config=config)
-        results.append((str(a_path), str(s_path), result))
+    if parallel and len(pairs) > 1:
+        # Parallel batch processing
+        def _process_pair(idx_pair):
+            i, (a_p, s_p) = idx_pair
+            r = pipeline.run(a_p.read_bytes(), s_p.read_bytes())
+            return i, a_p, s_p, r
 
-        if result.error:
-            print(f"ERROR: {result.error}")
-            any_error = True
-        elif result.match:
-            print(f"MATCH (cosine={result.cosine_score:.4f}, conf={result.confidence_pct:.1f}%)")
-        else:
-            print(f"NO MATCH (cosine={result.cosine_score:.4f}, conf={result.confidence_pct:.1f}%)")
-            any_no_match = True
+        futures = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for idx_pair in enumerate(pairs, 1):
+                f = executor.submit(_process_pair, idx_pair)
+                futures[f] = idx_pair
+
+            for future in as_completed(futures):
+                i, a_path, s_path, result = future.result()
+                log_batch_result(result, str(a_path), str(s_path), batch_dir, config=config)
+                results.append((str(a_path), str(s_path), result))
+                _print_pair_result(i, len(pairs), a_path, s_path, result)
+                if result.error:
+                    any_error = True
+                elif not result.match:
+                    any_no_match = True
+        # Sort results by original pair order for consistent summary
+        pair_order = {(str(a), str(s)): i for i, (a, s) in enumerate(pairs)}
+        results.sort(key=lambda x: pair_order.get((x[0], x[1]), 0))
+    else:
+        for i, (a_path, s_path) in enumerate(pairs, 1):
+            print(f"  [{i}/{len(pairs)}] {a_path.name} vs {s_path.name} ... ", end="", flush=True)
+            result = pipeline.run(a_path.read_bytes(), s_path.read_bytes())
+            log_batch_result(result, str(a_path), str(s_path), batch_dir, config=config)
+            results.append((str(a_path), str(s_path), result))
+
+            if result.error:
+                print(f"ERROR: {result.error}")
+                any_error = True
+            elif result.match:
+                print(f"MATCH (cosine={result.cosine_score:.4f}, conf={result.confidence_pct:.1f}%)")
+            else:
+                print(f"NO MATCH (cosine={result.cosine_score:.4f}, conf={result.confidence_pct:.1f}%)")
+                any_no_match = True
 
     summary_path = write_batch_summary(batch_dir, results)
     readme_path = write_batch_readme(batch_dir, results, config=config)

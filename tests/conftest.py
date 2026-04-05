@@ -36,6 +36,34 @@ def sample_config():
             "age_gap_threshold": 5,
             "age_gap_relaxation_per_year": 0.01,
             "max_age_gap_relaxation": 0.10,
+            "adaptive_thresholds": False,
+            "quality_weighted_fusion": False,
+        },
+        "adaface": {
+            "enabled": False,
+            "model_path": "models/adaface/adaface_ir101_webface12m.ckpt",
+            "fusion_weight": 0.3,
+        },
+        "score_norm": {
+            "enabled": False,
+            "cohort_path": "models/snorm_cohort.npy",
+            "cohort_size": 100,
+        },
+        "calibration": {
+            "enabled": False,
+            "platt_a": 15.0,
+            "platt_b": -7.5,
+        },
+        "crop_restore": {
+            "enabled": False,
+            "backend": "bilateral",
+        },
+        "cache": {
+            "max_size": 64,
+        },
+        "batch": {
+            "parallel": False,
+            "max_workers": 2,
         },
         "vlm_guard": {
             "enabled": True,
