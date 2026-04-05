@@ -42,6 +42,30 @@ class TestBytesToBGR:
         assert result.shape[2] == 3
 
 
+class TestPDFSupport:
+    """Test PDF image extraction in bytes_to_bgr."""
+
+    def test_pdf_magic_bytes_detected(self):
+        """Non-PDF bytes should not trigger PDF path."""
+        jpeg = cv2.imencode(".jpg", np.zeros((10, 10, 3), dtype=np.uint8))[1].tobytes()
+        assert not jpeg.startswith(b"%PDF-")
+        img = bytes_to_bgr(jpeg)
+        assert img.shape == (10, 10, 3)
+
+    def test_pdf_missing_pymupdf_raises(self):
+        """PDF bytes without PyMuPDF should raise ValueError."""
+        import unittest.mock as mock
+        pdf_bytes = b"%PDF-1.4 fake content"
+        with mock.patch.dict("sys.modules", {"fitz": None}):
+            with pytest.raises((ValueError, ImportError)):
+                bytes_to_bgr(pdf_bytes)
+
+    def test_pdf_empty_raises(self):
+        """Empty bytes should raise ValueError."""
+        with pytest.raises(ValueError, match="empty"):
+            bytes_to_bgr(b"")
+
+
 class TestBGRToBase64:
     def test_roundtrip(self):
         img = np.random.randint(0, 255, (112, 112, 3), dtype=np.uint8)

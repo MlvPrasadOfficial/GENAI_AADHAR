@@ -1,18 +1,23 @@
-"""Image I/O utilities: EXIF correction, format conversion, base64 encoding."""
+"""Image I/O utilities: EXIF correction, format conversion, base64 encoding, PDF support."""
 
 import base64
 import io
+import logging
 
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
+logger = logging.getLogger(__name__)
+
 
 def bytes_to_bgr(raw_bytes: bytes) -> np.ndarray:
     """Load raw image bytes into a BGR numpy array with EXIF orientation correction.
 
+    Supports JPEG, PNG, and PDF (extracts largest embedded image from first page).
+
     Args:
-        raw_bytes: JPEG/PNG file content.
+        raw_bytes: JPEG/PNG/PDF file content.
 
     Returns:
         BGR uint8 numpy array (H, W, 3).
@@ -25,11 +30,91 @@ def bytes_to_bgr(raw_bytes: bytes) -> np.ndarray:
     if len(raw_bytes) == 0:
         raise ValueError("Image bytes are empty")
 
+    # Detect PDF by magic bytes (%PDF)
+    if raw_bytes[:5] == b"%PDF-":
+        return _pdf_to_bgr(raw_bytes)
+
     pil_img = Image.open(io.BytesIO(raw_bytes))
     pil_img = ImageOps.exif_transpose(pil_img)
     pil_img = pil_img.convert("RGB")
     rgb_array = np.array(pil_img, dtype=np.uint8)
     return cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR)
+
+
+def _pdf_to_bgr(raw_bytes: bytes) -> np.ndarray:
+    """Extract the largest image from the first page of a PDF.
+
+    Falls back to rendering the page as a pixmap if no embedded images found.
+
+    Args:
+        raw_bytes: PDF file content.
+
+    Returns:
+        BGR uint8 numpy array (H, W, 3).
+
+    Raises:
+        ValueError: If no image can be extracted from the PDF.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        raise ValueError(
+            "PDF support requires PyMuPDF. Install with: pip install PyMuPDF"
+        )
+
+    doc = fitz.open(stream=raw_bytes, filetype="pdf")
+    if len(doc) == 0:
+        doc.close()
+        raise ValueError("PDF has no pages")
+
+    page = doc[0]
+
+    # Strategy 1: Extract embedded images (preferred — lossless)
+    images = page.get_images()
+    if images:
+        # Pick the largest embedded image
+        best_img = None
+        best_pixels = 0
+        for img_info in images:
+            xref = img_info[0]
+            extracted = doc.extract_image(xref)
+            pixels = extracted["width"] * extracted["height"]
+            if pixels > best_pixels:
+                best_pixels = pixels
+                best_img = extracted
+
+        if best_img is not None:
+            img_bytes = best_img["image"]
+            doc.close()
+            logger.info(
+                "PDF: extracted %dx%d %s image from embedded content",
+                best_img["width"], best_img["height"], best_img["ext"],
+            )
+            # Decode extracted image bytes via PIL
+            pil_img = Image.open(io.BytesIO(img_bytes))
+            pil_img = pil_img.convert("RGB")
+            rgb_array = np.array(pil_img, dtype=np.uint8)
+            return cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR)
+
+    # Strategy 2: Render page to pixmap (fallback for vector PDFs)
+    logger.info("PDF: no embedded images, rendering page as pixmap")
+    zoom = 2.0  # 2x zoom for better quality
+    mat = fitz.Matrix(zoom, zoom)
+    pix = page.get_pixmap(matrix=mat)
+    doc.close()
+
+    # Convert pixmap to numpy array
+    img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+        pix.height, pix.width, pix.n
+    )
+    if pix.n == 4:  # RGBA
+        img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGR)
+    elif pix.n == 3:  # RGB
+        img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+    else:
+        raise ValueError(f"Unexpected pixmap channels: {pix.n}")
+
+    return img_array
 
 
 def bgr_to_base64_jpeg(image: np.ndarray, quality: int = 90) -> str:
