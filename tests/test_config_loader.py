@@ -136,3 +136,26 @@ class TestValidation:
         """Config without confidence_adjustments should pass validation."""
         cfg = _base_config()
         _validate(cfg)  # no confidence_adjustments — should be fine
+
+    def test_preprocessing_clahe_clip_limit_zero_raises(self):
+        cfg = _base_config()
+        cfg["preprocessing"] = {"clahe_clip_limit": 0}
+        with pytest.raises(ValueError, match="clahe_clip_limit"):
+            _validate(cfg)
+
+    def test_preprocessing_clahe_clip_limit_negative_raises(self):
+        cfg = _base_config()
+        cfg["preprocessing"] = {"clahe_clip_limit": -1.0}
+        with pytest.raises(ValueError, match="clahe_clip_limit"):
+            _validate(cfg)
+
+    def test_preprocessing_clahe_tile_size_zero_raises(self):
+        cfg = _base_config()
+        cfg["preprocessing"] = {"clahe_tile_size": 0}
+        with pytest.raises(ValueError, match="clahe_tile_size"):
+            _validate(cfg)
+
+    def test_preprocessing_valid_passes(self):
+        cfg = _base_config()
+        cfg["preprocessing"] = {"aadhaar_clahe": True, "clahe_clip_limit": 3.0, "clahe_tile_size": 4}
+        _validate(cfg)  # should not raise

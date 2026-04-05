@@ -140,3 +140,57 @@ class TestMultiFaceWarning:
         loaded_processor._app.get.return_value = faces
         result = loaded_processor.process(np.zeros((200, 200, 3), dtype=np.uint8))
         assert result.num_faces_detected == 2
+
+
+class TestFlipAugment:
+    """Flip-augmented embedding (TTA) tests."""
+
+    @patch("insightface.utils.face_align.norm_crop", return_value=np.zeros((112, 112, 3), dtype=np.uint8))
+    def test_flip_augment_averages_embeddings(self, mock_crop, sample_config):
+        """With flip_augment=True, embedding should be averaged with flipped version."""
+        sample_config["face"]["flip_augment"] = True
+        proc = FaceProcessor(sample_config)
+        proc._app = MagicMock()
+
+        face = _make_fake_face(det_score=0.9)
+        proc._app.get.return_value = [face]
+
+        # Mock the rec model to return a known embedding for the flipped crop
+        mock_rec = MagicMock()
+        flipped_emb = np.random.randn(1, 512).astype(np.float32)
+        flipped_emb /= np.linalg.norm(flipped_emb)
+        mock_rec.get_feat.return_value = flipped_emb
+        mock_rec.taskname = "recognition"
+        proc._app.models = {"w600k_r50": mock_rec}
+
+        result = proc.process(np.zeros((200, 200, 3), dtype=np.uint8))
+        # Embedding should be L2-normalized
+        assert abs(np.linalg.norm(result.embedding) - 1.0) < 0.001
+        # It should NOT be identical to the original (it's averaged with flip)
+        assert not np.allclose(result.embedding, face.normed_embedding, atol=1e-3)
+
+    @patch("insightface.utils.face_align.norm_crop", return_value=np.zeros((112, 112, 3), dtype=np.uint8))
+    def test_no_flip_augment_by_default(self, mock_crop, loaded_processor):
+        """Default config should NOT apply flip augment."""
+        face = _make_fake_face(det_score=0.9)
+        loaded_processor._app.get.return_value = [face]
+
+        result = loaded_processor.process(np.zeros((200, 200, 3), dtype=np.uint8))
+        # Should match original embedding (no averaging)
+        assert np.allclose(result.embedding, face.normed_embedding, atol=0.02)
+
+    @patch("insightface.utils.face_align.norm_crop", return_value=np.zeros((112, 112, 3), dtype=np.uint8))
+    def test_flip_augment_graceful_without_rec_model(self, mock_crop, sample_config):
+        """If recognition model is not found, flip augment should be skipped gracefully."""
+        sample_config["face"]["flip_augment"] = True
+        proc = FaceProcessor(sample_config)
+        proc._app = MagicMock()
+        proc._app.models = {}  # no models
+
+        face = _make_fake_face(det_score=0.9)
+        proc._app.get.return_value = [face]
+
+        result = proc.process(np.zeros((200, 200, 3), dtype=np.uint8))
+        # Should still return a valid result (falls back to original embedding)
+        assert result.embedding is not None
+        assert abs(np.linalg.norm(result.embedding) - 1.0) < 0.001

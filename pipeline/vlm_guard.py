@@ -32,17 +32,23 @@ You are given two face images:
 The automated embedding system computed a cosine similarity of {score:.3f}
 (scale: 0.0 = completely different, 1.0 = identical, threshold for match is 0.60).
 
-Compare ONLY structural facial features: eye spacing, nose bridge width, jawline shape, cheekbone structure, ear position.
-IGNORE: image quality differences, lighting, skin tone, glasses, facial hair, makeup.
+Compare ONLY bone-structure features that DO NOT change with aging: eye socket shape, inter-pupillary distance, nose bridge width and profile, ear shape and position, forehead height-to-width ratio, cheekbone structure.
+IGNORE completely: image quality, lighting, skin tone, glasses, facial hair, makeup, wrinkles, weight changes, hair changes.
+DO NOT penalize for age-related differences — people's faces change over time but their bone structure stays the same.
+
+If the bone structure is consistent, answer same_person=true even if surface appearance differs due to aging.
+Only answer same_person=false if the bone STRUCTURE is fundamentally different (different eye spacing, different nose shape, different skull proportions).
 
 Respond ONLY with valid JSON (no other text):
-{{"same_person": true, "confidence": "high", "reasoning": "one sentence explaining key matching feature", "quality_issues": "description or null"}}"""
+{{"same_person": true, "confidence": "high", "reasoning": "one sentence explaining key structural match/mismatch", "quality_issues": "description or null"}}"""
 
 AGE_GAP_PROMPT_SUPPLEMENT = """
-IMPORTANT AGE CONTEXT: The Aadhaar face is estimated at age {aadhaar_age}, the selfie at age {selfie_age} (~{age_gap} year gap).
-The Aadhaar photo was likely taken years ago and printed on the card.
-Focus on AGE-STABLE structural features: eye socket shape, nose bridge profile, ear shape/position, inter-pupillary distance, forehead height ratio.
-DISCOUNT age-VARIANT features: skin texture, wrinkle patterns, jawline definition, cheek fullness, hair changes."""
+CRITICAL AGE CONTEXT: The Aadhaar face is estimated at age {aadhaar_age}, the selfie at age {selfie_age} (~{age_gap} year gap).
+The Aadhaar photo was taken YEARS AGO and printed on a card — expect significant appearance changes.
+This is NORMAL for KYC verification. A {age_gap}-year gap WILL cause visible aging differences.
+You MUST focus ONLY on age-invariant bone geometry: eye socket shape, nose bridge, ear shape, inter-pupillary distance.
+You MUST IGNORE all age-variant features: skin texture, wrinkles, jawline softening, cheek fullness, hair.
+If bone structure matches, answer same_person=true — appearance changes from aging are EXPECTED, not evidence of a different person."""
 
 # Required keys in a valid VLM JSON response
 _REQUIRED_VLM_KEYS = {"same_person", "confidence", "reasoning"}

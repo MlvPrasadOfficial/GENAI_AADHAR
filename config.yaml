@@ -1,5 +1,12 @@
 # Aadhaar KYC Face Matching Pipeline Configuration
 
+preprocessing:
+  aadhaar_clahe: true          # CLAHE contrast normalization for Aadhaar card images
+  clahe_clip_limit: 2.0        # CLAHE clip limit (higher = more contrast boost)
+  clahe_tile_size: 8           # CLAHE local grid size
+  dual_path: true              # Compare original vs preprocessed Aadhaar, keep better cosine score
+  grayscale_normalize: false   # Convert both images to grayscale before embedding (experimental)
+
 enhancement:
   enabled: true
   model: "RealESRGAN_x4plus"
@@ -14,6 +21,7 @@ face:
   det_thresh: 0.7          # primary detection threshold
   det_thresh_fallback: 0.5 # retry if no face found at primary threshold
   ctx_id: 0                # GPU device index
+  flip_augment: true       # horizontal flip TTA for more robust embeddings
 
 similarity:
   match_threshold: 0.60    # >= this = definite match
@@ -26,7 +34,7 @@ vlm_guard:
   enabled: true
   ollama_url: "http://localhost:11434"
   model: "qwen2.5vl:7b"       # Best face verification accuracy (FaceXBench 2025)
-  timeout_s: 120
+  timeout_s: 300
   temperature: 0.1
 
 # Confidence score adjustments (additive, applied during decision fusion)

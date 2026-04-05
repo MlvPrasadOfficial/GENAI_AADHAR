@@ -58,6 +58,55 @@ def bgr_to_base64_jpeg(image: np.ndarray, quality: int = 90) -> str:
     return base64.b64encode(buf.tobytes()).decode("ascii")
 
 
+def apply_clahe(image: np.ndarray, clip_limit: float = 2.0, tile_size: int = 8) -> np.ndarray:
+    """Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to a BGR image.
+
+    Normalizes contrast locally — especially useful for printed ID card photos
+    where lighting is uneven and contrast is low compared to live selfies.
+    Operates on the L channel in LAB color space to preserve color.
+
+    Args:
+        image: BGR uint8 numpy array (H, W, 3).
+        clip_limit: CLAHE contrast clip limit (higher = more contrast).
+        tile_size: Grid size for local histogram equalization.
+
+    Returns:
+        Contrast-normalized BGR uint8 numpy array.
+    """
+    if not isinstance(image, np.ndarray) or image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError(f"Expected HxWx3 BGR array, got shape {getattr(image, 'shape', '?')}")
+    if clip_limit <= 0:
+        raise ValueError(f"clip_limit must be positive, got {clip_limit}")
+    if tile_size <= 0:
+        raise ValueError(f"tile_size must be positive, got {tile_size}")
+
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l_chan, a_chan, b_chan = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_size, tile_size))
+    l_chan = clahe.apply(l_chan)
+    lab = cv2.merge([l_chan, a_chan, b_chan])
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+
+def to_grayscale_bgr(image: np.ndarray) -> np.ndarray:
+    """Convert a BGR image to 3-channel grayscale (removes color information).
+
+    Useful for cross-domain face matching: eliminates color cast differences
+    between printed ID card photos and live selfies, forcing the model to
+    rely purely on structural/texture features.
+
+    Args:
+        image: BGR uint8 numpy array (H, W, 3).
+
+    Returns:
+        3-channel grayscale BGR uint8 numpy array (same shape as input).
+    """
+    if not isinstance(image, np.ndarray) or image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError(f"Expected HxWx3 BGR array, got shape {getattr(image, 'shape', '?')}")
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+
 def validate_image_dimensions(image: np.ndarray, min_size: int = 50) -> tuple[int, int]:
     """Validate image dimensions meet minimum requirements.
 

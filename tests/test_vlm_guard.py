@@ -145,7 +145,7 @@ class TestVLMGuardAgePrompt:
 
         guard.verify(*face_crops, cosine_score=0.55, aadhaar_age=30, selfie_age=32)
         sent_prompt = mock_post.call_args[1]["json"]["messages"][0]["content"]
-        assert "AGE-STABLE" not in sent_prompt
+        assert "AGE CONTEXT" not in sent_prompt
 
     @patch("pipeline.vlm_guard.requests.post")
     def test_age_supplement_injected_when_gap_gt_3(self, mock_post, guard, face_crops):
@@ -159,8 +159,8 @@ class TestVLMGuardAgePrompt:
 
         guard.verify(*face_crops, cosine_score=0.55, aadhaar_age=25, selfie_age=35)
         sent_prompt = mock_post.call_args[1]["json"]["messages"][0]["content"]
-        assert "AGE-STABLE" in sent_prompt
-        assert "DISCOUNT" in sent_prompt
+        assert "AGE CONTEXT" in sent_prompt
+        assert "bone geometry" in sent_prompt
 
     @patch("pipeline.vlm_guard.requests.post")
     def test_age_gap_value_in_prompt(self, mock_post, guard, face_crops):
@@ -188,7 +188,7 @@ class TestVLMGuardAgePrompt:
 
         guard.verify(*face_crops, cosine_score=0.55, aadhaar_age=0, selfie_age=35)
         sent_prompt = mock_post.call_args[1]["json"]["messages"][0]["content"]
-        assert "AGE-STABLE" not in sent_prompt
+        assert "AGE CONTEXT" not in sent_prompt
 
 
 class TestVLMGuardHTTP:

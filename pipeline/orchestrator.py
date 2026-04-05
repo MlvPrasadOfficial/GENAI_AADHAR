@@ -16,7 +16,7 @@ from pipeline.face_processor import FaceProcessor
 from pipeline.similarity import SimilarityScorer
 from pipeline.vlm_guard import VLMGuard
 from utils.exceptions import NoFaceDetectedError, PipelineError
-from utils.image_utils import bytes_to_bgr
+from utils.image_utils import apply_clahe, bytes_to_bgr, to_grayscale_bgr
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,14 @@ class KYCPipelineOrchestrator:
         self._age_gap_vlm_bonus: float = ca.get("age_gap_vlm_bonus", 5.0)
         self._gender_mismatch_penalty: float = ca.get("gender_mismatch_penalty", 0.0)
 
+        # Preprocessing options
+        preproc = config.get("preprocessing", {})
+        self._aadhaar_clahe: bool = preproc.get("aadhaar_clahe", False)
+        self._clahe_clip_limit: float = preproc.get("clahe_clip_limit", 2.0)
+        self._clahe_tile_size: int = preproc.get("clahe_tile_size", 8)
+        self._dual_path: bool = preproc.get("dual_path", False)
+        self._grayscale_normalize: bool = preproc.get("grayscale_normalize", False)
+
         # Age-gap threshold relaxation
         sim = config.get("similarity", {})
         self._age_gap_threshold: int = sim.get("age_gap_threshold", 5)
@@ -105,11 +113,30 @@ class KYCPipelineOrchestrator:
             selfie_img = bytes_to_bgr(selfie_bytes)
             timings["load_ms"] = _elapsed_ms(t0)
 
+            # Save original Aadhaar for dual-path comparison
+            aadhaar_original = aadhaar_img.copy() if self._dual_path else None
+
             # --- Stage 2: Quality assessment + enhancement ---
             t0 = time.perf_counter()
             aadhaar_img, aadhaar_quality = self.enhancer.maybe_enhance(aadhaar_img)
             selfie_img, selfie_quality = self.enhancer.maybe_enhance(selfie_img)
             timings["enhancement_ms"] = _elapsed_ms(t0)
+
+            # --- Stage 2b: CLAHE contrast normalization for Aadhaar ---
+            if self._aadhaar_clahe:
+                t0 = time.perf_counter()
+                aadhaar_img = apply_clahe(
+                    aadhaar_img, self._clahe_clip_limit, self._clahe_tile_size,
+                )
+                timings["clahe_ms"] = _elapsed_ms(t0)
+                logger.info("CLAHE applied to Aadhaar image (clip=%.1f, tile=%d)",
+                            self._clahe_clip_limit, self._clahe_tile_size)
+
+            # --- Stage 2c: Grayscale normalization (removes color domain gap) ---
+            if self._grayscale_normalize:
+                aadhaar_img = to_grayscale_bgr(aadhaar_img)
+                selfie_img = to_grayscale_bgr(selfie_img)
+                logger.info("Grayscale normalization applied to both images")
 
             # Re-assess quality AFTER enhancement to avoid false flags
             # (pre-enhancement score is stored for reporting, post for decision)
@@ -129,6 +156,33 @@ class KYCPipelineOrchestrator:
             score = self.scorer.cosine_similarity(
                 aadhaar_face.embedding, selfie_face.embedding
             )
+
+            # --- Stage 4b: Dual-path — try original (unprocessed) Aadhaar ---
+            if self._dual_path and aadhaar_original is not None:
+                try:
+                    t_dp = time.perf_counter()
+                    aadhaar_orig_face = self.processor.process(
+                        aadhaar_original, source="aadhaar-original",
+                    )
+                    score_orig = self.scorer.cosine_similarity(
+                        aadhaar_orig_face.embedding, selfie_face.embedding,
+                    )
+                    timings["dual_path_ms"] = _elapsed_ms(t_dp)
+                    if score_orig > score:
+                        logger.info(
+                            "Dual-path: original scored higher (%.4f > %.4f), using original",
+                            score_orig, score,
+                        )
+                        score = score_orig
+                        aadhaar_face = aadhaar_orig_face
+                    else:
+                        logger.info(
+                            "Dual-path: preprocessed scored higher (%.4f >= %.4f), keeping preprocessed",
+                            score, score_orig,
+                        )
+                except NoFaceDetectedError:
+                    logger.debug("Dual-path: no face in original Aadhaar, using preprocessed")
+
             decision = self.scorer.decide(score, quality_low=quality_low)
             timings["similarity_ms"] = _elapsed_ms(t0)
 

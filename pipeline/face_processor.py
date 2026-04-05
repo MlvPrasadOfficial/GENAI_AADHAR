@@ -13,6 +13,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from utils.exceptions import NoFaceDetectedError
@@ -50,7 +51,9 @@ class FaceProcessor:
         self.det_thresh: float = cfg["det_thresh"]
         self.det_thresh_fallback: float = cfg.get("det_thresh_fallback", 0.5)
         self.ctx_id: int = cfg["ctx_id"]
+        self.flip_augment: bool = cfg.get("flip_augment", False)
         self._app = None
+        self._rec_model = None  # cached recognition model for TTA
 
     def load(self) -> None:
         """Initialize InsightFace FaceAnalysis with buffalo_l model pack.
@@ -140,6 +143,14 @@ class FaceProcessor:
 
         aligned = norm_crop(image, best.kps, image_size=112)
 
+        # Flip-augmented embedding (TTA): average original + horizontally flipped
+        if self.flip_augment:
+            flipped_emb = self._get_flip_embedding(aligned)
+            if flipped_emb is not None:
+                embedding = (embedding + flipped_emb) / 2.0
+                embedding = embedding / np.linalg.norm(embedding)
+                logger.debug("%s: flip-augmented embedding computed", source)
+
         # Gender (0=Female, 1=Male) and age from the genderage model
         gender_val = getattr(best, "gender", None)
         gender = "M" if gender_val == 1 else "F" if gender_val == 0 else "unknown"
@@ -159,3 +170,40 @@ class FaceProcessor:
             age=age,
             num_faces_detected=num_faces,
         )
+
+    def _get_flip_embedding(self, aligned_crop: np.ndarray) -> np.ndarray | None:
+        """Compute ArcFace embedding for a horizontally flipped face crop.
+
+        Used for test-time augmentation (TTA): averaging the original and
+        flipped embeddings produces a more robust representation.
+
+        Args:
+            aligned_crop: 112x112 BGR uint8 aligned face image.
+
+        Returns:
+            L2-normalized 512-d embedding, or None if recognition model unavailable.
+        """
+        rec = self._find_rec_model()
+        if rec is None:
+            logger.warning("Recognition model not found — skipping flip augment")
+            return None
+
+        flipped = cv2.flip(aligned_crop, 1)  # horizontal flip
+        feat = rec.get_feat(flipped)
+        emb = feat.flatten().astype(np.float32)
+        norm = np.linalg.norm(emb)
+        if norm < 1e-6:
+            return None
+        return emb / norm
+
+    def _find_rec_model(self):
+        """Locate the ArcFace recognition model within FaceAnalysis."""
+        if self._rec_model is not None:
+            return self._rec_model
+        if self._app is None:
+            return None
+        for model in self._app.models.values():
+            if hasattr(model, "taskname") and model.taskname == "recognition":
+                self._rec_model = model
+                return model
+        return None

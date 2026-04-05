@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
-from utils.image_utils import bgr_to_base64_jpeg, bytes_to_bgr, validate_image_dimensions
+from utils.image_utils import apply_clahe, bgr_to_base64_jpeg, bytes_to_bgr, to_grayscale_bgr, validate_image_dimensions
 
 
 class TestBytesToBGR:
@@ -92,6 +92,67 @@ class TestInputValidation:
         img = np.zeros((10, 10, 3), dtype=np.uint8)
         with pytest.raises(ValueError, match="quality"):
             bgr_to_base64_jpeg(img, quality=101)
+
+
+class TestApplyCLAHE:
+    def test_output_same_shape(self):
+        img = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+        result = apply_clahe(img)
+        assert result.shape == img.shape
+        assert result.dtype == np.uint8
+
+    def test_improves_contrast_on_dark_image(self):
+        """CLAHE should increase the dynamic range of a uniformly dark image."""
+        dark = np.full((100, 100, 3), 30, dtype=np.uint8)
+        result = apply_clahe(dark, clip_limit=3.0)
+        assert result.mean() >= dark.mean()  # should brighten
+
+    def test_custom_params(self):
+        img = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+        result = apply_clahe(img, clip_limit=4.0, tile_size=4)
+        assert result.shape == img.shape
+
+    def test_rejects_non_bgr(self):
+        gray = np.zeros((100, 100), dtype=np.uint8)
+        with pytest.raises(ValueError, match="HxWx3"):
+            apply_clahe(gray)
+
+    def test_rejects_invalid_clip_limit(self):
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="clip_limit"):
+            apply_clahe(img, clip_limit=0)
+
+    def test_rejects_invalid_tile_size(self):
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="tile_size"):
+            apply_clahe(img, tile_size=-1)
+
+
+class TestToGrayscaleBGR:
+    def test_output_same_shape(self):
+        img = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+        result = to_grayscale_bgr(img)
+        assert result.shape == img.shape
+        assert result.dtype == np.uint8
+
+    def test_channels_are_identical(self):
+        """All 3 channels should be the same grayscale value."""
+        img = np.random.randint(0, 255, (50, 50, 3), dtype=np.uint8)
+        result = to_grayscale_bgr(img)
+        assert np.array_equal(result[:, :, 0], result[:, :, 1])
+        assert np.array_equal(result[:, :, 1], result[:, :, 2])
+
+    def test_already_gray_is_idempotent(self):
+        """Applying twice should produce the same result."""
+        img = np.random.randint(0, 255, (50, 50, 3), dtype=np.uint8)
+        once = to_grayscale_bgr(img)
+        twice = to_grayscale_bgr(once)
+        assert np.array_equal(once, twice)
+
+    def test_rejects_non_bgr(self):
+        gray = np.zeros((50, 50), dtype=np.uint8)
+        with pytest.raises(ValueError, match="HxWx3"):
+            to_grayscale_bgr(gray)
 
 
 class TestValidateImageDimensions:

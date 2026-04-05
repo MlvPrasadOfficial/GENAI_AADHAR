@@ -116,6 +116,18 @@ def _validate(config: dict) -> None:
     if "timeout_s" in vlm and vlm["timeout_s"] <= 0:
         raise ValueError(f"vlm_guard.timeout_s must be positive, got {vlm['timeout_s']}")
 
+    # --- preprocessing (optional section) ---
+    if "preprocessing" in config:
+        preproc = config["preprocessing"]
+        if "clahe_clip_limit" in preproc:
+            cl = preproc["clahe_clip_limit"]
+            if not isinstance(cl, (int, float)) or cl <= 0:
+                raise ValueError(f"preprocessing.clahe_clip_limit must be positive, got {cl}")
+        if "clahe_tile_size" in preproc:
+            ts = preproc["clahe_tile_size"]
+            if not isinstance(ts, int) or ts <= 0:
+                raise ValueError(f"preprocessing.clahe_tile_size must be a positive integer, got {ts}")
+
     # --- confidence_adjustments (optional section) ---
     if "confidence_adjustments" in config:
         ca = config["confidence_adjustments"]

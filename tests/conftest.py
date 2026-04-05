@@ -8,6 +8,13 @@ import pytest
 def sample_config():
     """Minimal config dict for testing."""
     return {
+        "preprocessing": {
+            "aadhaar_clahe": False,
+            "clahe_clip_limit": 2.0,
+            "clahe_tile_size": 8,
+            "dual_path": False,
+            "grayscale_normalize": False,
+        },
         "enhancement": {
             "enabled": False,
             "model": "RealESRGAN_x4plus",

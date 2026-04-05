@@ -220,3 +220,44 @@ class TestGenderMismatchPenalty:
             0.65, _decision(score=0.65), vlm_same_person=None, gender_mismatch=True
         )
         assert conf1 == conf2
+
+
+class TestPreprocessingConfig:
+    """CLAHE preprocessing wiring tests."""
+
+    def test_clahe_disabled_by_default(self, pipeline):
+        """Default sample_config has CLAHE disabled."""
+        assert pipeline._aadhaar_clahe is False
+
+    def test_clahe_enabled_from_config(self, sample_config):
+        sample_config["preprocessing"]["aadhaar_clahe"] = True
+        p = KYCPipelineOrchestrator(sample_config)
+        assert p._aadhaar_clahe is True
+        assert p._clahe_clip_limit == 2.0
+        assert p._clahe_tile_size == 8
+
+    def test_clahe_custom_params(self, sample_config):
+        sample_config["preprocessing"] = {
+            "aadhaar_clahe": True,
+            "clahe_clip_limit": 3.5,
+            "clahe_tile_size": 4,
+        }
+        p = KYCPipelineOrchestrator(sample_config)
+        assert p._clahe_clip_limit == 3.5
+        assert p._clahe_tile_size == 4
+
+    def test_dual_path_disabled_by_default(self, pipeline):
+        assert pipeline._dual_path is False
+
+    def test_dual_path_enabled_from_config(self, sample_config):
+        sample_config["preprocessing"]["dual_path"] = True
+        p = KYCPipelineOrchestrator(sample_config)
+        assert p._dual_path is True
+
+    def test_grayscale_disabled_by_default(self, pipeline):
+        assert pipeline._grayscale_normalize is False
+
+    def test_grayscale_enabled_from_config(self, sample_config):
+        sample_config["preprocessing"]["grayscale_normalize"] = True
+        p = KYCPipelineOrchestrator(sample_config)
+        assert p._grayscale_normalize is True
