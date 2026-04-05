@@ -11,9 +11,9 @@ Local face matching system for KYC verification. Compares a face in an Aadhaar c
 ## Run the Pipeline
 ```bash
 conda activate aadhar
-# Single pair
+# Single pair (supports JPG, PNG, PDF Aadhaar cards)
 python main.py --aadhaar path/to/aadhaar_card.jpg --selfie path/to/selfie.jpg
-python main.py --aadhaar card.jpg --selfie selfie.jpg --verbose
+python main.py --aadhaar aadhaar.pdf --selfie selfie.jpg --verbose
 python main.py --aadhaar card.jpg --selfie selfie.jpg --json-output
 
 # Batch mode (CSV with aadhaar,selfie columns)
@@ -21,7 +21,7 @@ python main.py --batch pairs.csv --verbose
 ```
 
 ## Pipeline Stages (in order)
-1. `utils/image_utils.py` — EXIF correction, load bytes → BGR numpy (with input type/size validation)
+1. `utils/image_utils.py` — EXIF correction, load bytes → BGR numpy (with input type/size validation, PDF support via PyMuPDF)
 2. `pipeline/enhancement.py` — Real-ESRGAN upscale (skipped if quality >= 0.4; warns if unavailable)
 2b. `utils/image_utils.py` — CLAHE contrast normalization for Aadhaar card images (configurable)
 2c. `utils/image_utils.py` — Optional grayscale normalization (removes color domain gap between printed/live)
@@ -62,6 +62,7 @@ python main.py --batch pairs.csv --verbose
 | Embedding ensemble | Multi-augmentation TTA (flip+brightness+blur) | More robust than single-augmentation |
 | AdaFace second model | Quality-adaptive face recognition | Cross-validates with ArcFace (optional) |
 | Parallel batch | ThreadPoolExecutor for concurrent pairs | Faster batch processing |
+| PDF Aadhaar input | PyMuPDF embedded image extraction + pixmap fallback | Supports scanned PDF Aadhaar cards natively |
 
 ## Similarity Thresholds
 - `cosine_score >= match_threshold (0.60)` → **MATCH** (skip VLM unless quality is low)
@@ -110,7 +111,7 @@ pip install onnxruntime-gpu==1.19.2
 pip install basicsr==1.4.2
 pip install realesrgan==0.3.0
 pip install insightface==0.7.3
-pip install opencv-python==4.10.0.84 Pillow==10.4.0 PyYAML==6.0.2 requests==2.32.3 tqdm==4.66.4 pytest==8.3.2
+pip install opencv-python==4.10.0.84 Pillow==10.4.0 PyYAML==6.0.2 requests==2.32.3 tqdm==4.66.4 pytest==8.3.2 PyMuPDF==1.24.5
 
 # Ollama (already installed on this machine)
 ollama pull qwen2.5vl:7b
@@ -133,12 +134,12 @@ Ensure these are in system PATH:
 
 ## Testing
 ```bash
-pytest tests/ -v -m "not integration"        # all unit tests (238 tests, no GPU needed)
+pytest tests/ -v -m "not integration"        # all unit tests (241 tests, no GPU needed)
 pytest tests/test_similarity.py -v           # similarity + L2 + SSIM + landmarks + fusion (43 tests)
 pytest tests/test_new_features.py -v         # cache, S-norm, calibrator, crop restore, adaptive, AdaFace (36 tests)
 pytest tests/test_config_loader.py -v        # config validation (24 tests)
 pytest tests/test_vlm_guard.py -v            # VLM parsing + URL + age prompt (25 tests)
-pytest tests/test_image_utils.py -v          # image I/O + input validation + CLAHE + grayscale + dimensions (28 tests)
+pytest tests/test_image_utils.py -v          # image I/O + input validation + CLAHE + grayscale + dimensions + PDF (31 tests)
 pytest tests/test_result_logger.py -v        # audit log + age-gap trace (11 tests)
 pytest tests/test_enhancement.py -v          # quality scoring + downscale (15 tests)
 pytest tests/test_face_processor.py -v       # face detection + multi-face + flip/ensemble augment (15 tests)
@@ -160,14 +161,15 @@ pipeline/score_norm.py            S-norm score calibration (impostor cohort z-no
 pipeline/confidence_calibrator.py Platt scaling confidence calibration
 pipeline/crop_restore.py          Crop-level face restoration (bilateral/GFPGAN)
 pipeline/adaface.py               AdaFace second model integration (optional)
-utils/image_utils.py              EXIF, BGR/RGB, base64, CLAHE, grayscale, dimensions
+utils/image_utils.py              EXIF, BGR/RGB, base64, CLAHE, grayscale, dimensions, PDF extraction
 utils/config_loader.py            YAML config loader with validation
 utils/result_logger.py            Per-run log folders with decision trace, batch README
 utils/embedding_cache.py          LRU embedding cache by image hash
 utils/exceptions.py               Custom exceptions
 scripts/download_models.py        Model weight downloader
 models/                           Downloaded weights (gitignored)
-tests/                            238 unit tests across 12 test files
+pairs.csv                         90 test pairs (9 Aadhaar × 10 selfies, full matrix)
+tests/                            241 unit tests across 11 test files
 ```
 
 ## Known Pitfalls
@@ -178,3 +180,9 @@ tests/                            238 unit tests across 12 test files
 - buffalo_l is non-commercial research license only
 - Enhancement silently skips if model weights are missing — check logs for warnings
 - VLM response parsing falls back to regex if model returns non-JSON — check `raw_response` in logs
+- PDF Aadhaar cards require PyMuPDF (`fitz`) — auto-detected via `%PDF-` magic bytes in file header
+
+## Test Data
+- `FILES/AADHAR/` — 9 Aadhaar cards (4 JPG + 5 PDF)
+- `FILES/SELFIE/` — 10 selfie photos (JPG)
+- `pairs.csv` — Full 90-pair matrix (9 × 10), verified result: 9/90 matches
