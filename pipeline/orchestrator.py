@@ -41,6 +41,13 @@ class PipelineResult:
     selfie_age: int = 0
     aadhaar_num_faces: int = 1
     selfie_num_faces: int = 1
+    # Multi-metric similarity signals
+    l2_distance: float = 0.0
+    l2_score: float = 0.0
+    ssim: float = 0.0
+    landmark_score: float = -1.0    # -1 = unavailable
+    pose_diff: float = -1.0         # -1 = unavailable
+    fused_score: float = 0.0
     error: str | None = None        # non-None if pipeline failed
 
 
@@ -183,6 +190,9 @@ class KYCPipelineOrchestrator:
                 except NoFaceDetectedError:
                     logger.debug("Dual-path: no face in original Aadhaar, using preprocessed")
 
+            # --- Stage 4c: Multi-metric similarity ---
+            metrics = self.scorer.compute_all_metrics(aadhaar_face, selfie_face)
+
             decision = self.scorer.decide(score, quality_low=quality_low)
             timings["similarity_ms"] = _elapsed_ms(t0)
 
@@ -239,6 +249,12 @@ class KYCPipelineOrchestrator:
                 selfie_age=selfie_face.age,
                 aadhaar_num_faces=aadhaar_face.num_faces_detected,
                 selfie_num_faces=selfie_face.num_faces_detected,
+                l2_distance=metrics.l2_distance,
+                l2_score=metrics.l2_score,
+                ssim=metrics.ssim,
+                landmark_score=metrics.landmark_score,
+                pose_diff=metrics.pose_diff,
+                fused_score=metrics.fused_score,
             )
 
         except NoFaceDetectedError as e:

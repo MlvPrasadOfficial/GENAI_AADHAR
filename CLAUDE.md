@@ -118,8 +118,8 @@ Ensure these are in system PATH:
 
 ## Testing
 ```bash
-pytest tests/ -v -m "not integration"        # all unit tests (174 tests, no GPU needed)
-pytest tests/test_similarity.py -v           # similarity only (15 tests)
+pytest tests/ -v -m "not integration"        # all unit tests (202 tests, no GPU needed)
+pytest tests/test_similarity.py -v           # similarity only (43 tests)
 pytest tests/test_config_loader.py -v        # config validation (24 tests)
 pytest tests/test_vlm_guard.py -v            # VLM parsing + URL + age prompt (25 tests)
 pytest tests/test_image_utils.py -v          # image I/O + input validation + CLAHE + grayscale + dimensions (28 tests)

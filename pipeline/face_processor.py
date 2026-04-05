@@ -32,6 +32,8 @@ class FaceResult:
     gender: str                # "M" or "F"
     age: int                   # estimated age
     num_faces_detected: int = 1  # total faces found in the image
+    landmark_3d_68: np.ndarray | None = None  # (68, 3) 3D facial landmarks
+    pose: np.ndarray | None = None            # (3,) pitch, yaw, roll in degrees
 
 
 class FaceProcessor:
@@ -156,6 +158,14 @@ class FaceProcessor:
         gender = "M" if gender_val == 1 else "F" if gender_val == 0 else "unknown"
         age = int(getattr(best, "age", 0))
 
+        # 68-point 3D landmarks and face pose (from buffalo_l 1k3d68 model)
+        lmk_68 = getattr(best, "landmark_3d_68", None)
+        pose = getattr(best, "pose", None)
+        if lmk_68 is not None:
+            lmk_68 = np.array(lmk_68, dtype=np.float32)
+        if pose is not None:
+            pose = np.array(pose, dtype=np.float32)
+
         logger.info(
             "%s: face detected (score=%.3f, bbox=%s, gender=%s, age=%d)",
             source, best.det_score, bbox, gender, age,
@@ -169,6 +179,8 @@ class FaceProcessor:
             gender=gender,
             age=age,
             num_faces_detected=num_faces,
+            landmark_3d_68=lmk_68,
+            pose=pose,
         )
 
     def _get_flip_embedding(self, aligned_crop: np.ndarray) -> np.ndarray | None:

@@ -39,6 +39,22 @@ def _gender_match_note(aadhaar_gender: str, selfie_gender: str) -> str:
     return f"Gender MISMATCH: Aadhaar={aadhaar_gender}, Selfie={selfie_gender}"
 
 
+def _metrics_lines(result) -> list[str]:
+    """Build similarity metrics section lines from a PipelineResult."""
+    lines = [
+        "--- Similarity Metrics ---",
+        f"Cosine:         {result.cosine_score:.4f}",
+        f"L2 Distance:    {getattr(result, 'l2_distance', 0):.4f}  (score: {getattr(result, 'l2_score', 0):.4f})",
+        f"SSIM:           {getattr(result, 'ssim', 0):.4f}",
+    ]
+    lmk = getattr(result, 'landmark_score', -1)
+    lines.append(f"Landmark Geom:  {lmk:.4f}" + (" (unavailable)" if lmk < 0 else ""))
+    pose = getattr(result, 'pose_diff', -1)
+    lines.append(f"Pose Diff:      {pose:.1f} deg" + (" (unavailable)" if pose < 0 else ""))
+    lines.append(f"Fused Score:    {getattr(result, 'fused_score', 0):.4f}")
+    return lines
+
+
 def _demographics_lines(result) -> list[str]:
     """Build demographics section lines from a PipelineResult."""
     a_g = getattr(result, "aadhaar_gender", "unknown")
@@ -101,6 +117,8 @@ def log_result(
         f"Match:          {'YES' if result.match else 'NO'}",
         f"Confidence:     {result.confidence_pct:.1f}%",
         f"Cosine Score:   {result.cosine_score:.4f}",
+        f"",
+        *_metrics_lines(result),
         f"",
         f"--- Quality ---",
         f"Aadhaar Quality: {result.aadhaar_quality:.2f}",
@@ -178,6 +196,19 @@ def _write_single_readme(
     md.append(f"| **Confidence** | {result.confidence_pct:.1f}% |")
     md.append(f"| **Aadhaar Quality** | {result.aadhaar_quality:.2f} |")
     md.append(f"| **Selfie Quality** | {result.selfie_quality:.2f} |")
+
+    # Multi-metric similarity
+    l2_d = getattr(result, 'l2_distance', 0)
+    l2_s = getattr(result, 'l2_score', 0)
+    ssim_v = getattr(result, 'ssim', 0)
+    lmk_s = getattr(result, 'landmark_score', -1)
+    pose_d = getattr(result, 'pose_diff', -1)
+    fused = getattr(result, 'fused_score', 0)
+    md.append(f"| **L2 Distance** | {l2_d:.4f} (score: {l2_s:.4f}) |")
+    md.append(f"| **SSIM** | {ssim_v:.4f} |")
+    md.append(f"| **Landmark Score** | {lmk_s:.4f}{' (unavailable)' if lmk_s < 0 else ''} |")
+    md.append(f"| **Pose Diff** | {pose_d:.1f} deg{' (unavailable)' if pose_d < 0 else ''} |")
+    md.append(f"| **Fused Score** | {fused:.4f} |")
 
     a_age = getattr(result, "aadhaar_age", 0)
     s_age = getattr(result, "selfie_age", 0)
@@ -454,6 +485,8 @@ def log_batch_result(
         f"Confidence:     {result.confidence_pct:.1f}%",
         f"Cosine Score:   {result.cosine_score:.4f}",
         f"",
+        *_metrics_lines(result),
+        f"",
         f"--- Quality ---",
         f"Aadhaar Quality: {result.aadhaar_quality:.2f}",
         f"Selfie Quality:  {result.selfie_quality:.2f}",
@@ -509,9 +542,9 @@ def write_batch_summary(
         f"Timestamp: {now.strftime('%Y-%m-%d %H:%M:%S')}",
         f"Total pairs: {len(results)}",
         "",
-        f"{'Aadhaar':25s} | {'Selfie':15s} | {'Result':10s} | Cosine | Conf   "
+        f"{'Aadhaar':25s} | {'Selfie':15s} | {'Result':10s} | Cosine | Fused  | Conf   "
         f"| {'Aadhaar Demo':16s} | {'Selfie Demo':16s} | Age Note",
-        "-" * 145,
+        "-" * 160,
     ]
 
     matches = 0
@@ -531,16 +564,17 @@ def write_batch_summary(
         age_note = _age_comparison(a_a, s_a)
         gender_note = "" if a_g == s_g else " [GENDER MISMATCH]"
 
+        fused = getattr(result, 'fused_score', 0)
         lines.append(
             f"{a_name:25s} | {s_name:15s} | {status:10s} | {result.cosine_score:.4f} "
-            f"| {result.confidence_pct:5.1f}% | {a_g} age {a_a:<10d} | {s_g} age {s_a:<10d} "
+            f"| {fused:.4f} | {result.confidence_pct:5.1f}% | {a_g} age {a_a:<10d} | {s_g} age {s_a:<10d} "
             f"| {age_note}{gender_note}"
         )
 
     lines.extend([
-        "-" * 145,
+        "-" * 160,
         f"Matches: {matches}/{len(results)}",
-        "=" * 145,
+        "=" * 160,
     ])
 
     summary_path = batch_dir / "summary.txt"
@@ -638,6 +672,19 @@ def write_batch_readme(
         md.append(f"| **Confidence** | {result.confidence_pct:.1f}% |")
         md.append(f"| **Aadhaar Quality** | {result.aadhaar_quality:.2f} |")
         md.append(f"| **Selfie Quality** | {result.selfie_quality:.2f} |")
+
+        # Multi-metric similarity
+        l2_d = getattr(result, 'l2_distance', 0)
+        l2_s = getattr(result, 'l2_score', 0)
+        ssim_v = getattr(result, 'ssim', 0)
+        lmk_s = getattr(result, 'landmark_score', -1)
+        pose_d = getattr(result, 'pose_diff', -1)
+        fused = getattr(result, 'fused_score', 0)
+        md.append(f"| **L2 Distance** | {l2_d:.4f} (score: {l2_s:.4f}) |")
+        md.append(f"| **SSIM** | {ssim_v:.4f} |")
+        md.append(f"| **Landmark Score** | {lmk_s:.4f}{' (unavailable)' if lmk_s < 0 else ''} |")
+        md.append(f"| **Pose Diff** | {pose_d:.1f} deg{' (unavailable)' if pose_d < 0 else ''} |")
+        md.append(f"| **Fused Score** | {fused:.4f} |")
 
         a_age = getattr(result, "aadhaar_age", 0)
         s_age = getattr(result, "selfie_age", 0)
