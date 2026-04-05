@@ -1,0 +1,12 @@
+# 1. Activate the conda environment
+conda activate aadhar
+
+# 2. Single pair (JPG or PDF Aadhaar)
+python main.py --aadhaar FILES/AADHAR/AADHAR001.jpg --selfie FILES/SELFIE/USER_01.jpg
+python main.py --aadhaar FILES/AADHAR/AADHAR05.pdf --selfie FILES/SELFIE/USER_03.jpg --verbose
+
+# 3. Batch mode (all 90 pairs)
+python main.py --batch pairs.csv --verbose
+
+# 4. JSON output (for programmatic use)
+python main.py --aadhaar FILES/AADHAR/AADHAR001.jpg --selfie FILES/SELFIE/USER_01.jpg --json-output
