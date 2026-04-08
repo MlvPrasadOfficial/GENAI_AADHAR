@@ -1,0 +1,55 @@
+Aadhaar KYC Face Matching — Run Log
+==================================================
+Timestamp:      2026-04-05 15:04:18
+Aadhaar Image:  FILES\AADHAR\AADHAR09.pdf
+Selfie Image:   FILES\SELFIE\USER_08.jpg
+
+--- Result ---
+Match:          NO
+Confidence:     16.7%
+Cosine Score:   0.1670
+
+--- Similarity Metrics ---
+Cosine:         0.1670
+L2 Distance:    1.2907  (score: 0.1443)
+SSIM:           0.1909
+Landmark Geom:  0.5128
+Pose Diff:      25.2 deg
+Fused Score:    0.2536
+
+--- Quality ---
+Aadhaar Quality: 1.00
+Selfie Quality:  1.00
+
+--- Demographics ---
+Aadhaar: Gender=M, Age=31
+Selfie:  Gender=M, Age=54
+  Aadhaar photo appears ~23yr YOUNGER than selfie (older Aadhaar card likely)
+  Gender: consistent
+
+--- VLM Guard ---
+VLM Same Person: None
+VLM Reasoning:   N/A
+
+--- Decision Trace ---
+  1. Enhancement: Skipped — both images above quality threshold (Aadhaar=1.00, Selfie=1.00, threshold=0.4)
+  2. Cosine similarity: 0.1670 → NO MATCH zone (< 0.4 uncertain threshold)
+  2b. Age-gap relaxation: 23yr gap → threshold relaxed by 0.100 (effective: match=0.500, uncertain=0.300)
+  3. Quality flag: OK (both images above 0.4 threshold)
+  4. VLM guard: Not needed — score below uncertain zone (definite no-match)
+  5. Final decision: NO MATCH at 16.7% confidence
+     Reason: Score below 0.4 — definite no-match, VLM not needed
+
+--- Timings ---
+  load_ms....................... 51 ms
+  enhancement_ms................ 41 ms
+  clahe_ms...................... 10 ms
+  face_processing_ms............ 0 ms
+  dual_path_ms.................. 962 ms
+  similarity_ms................. 965 ms
+  TOTAL......................... 2029 ms
+
+--- Face Crops ---
+  Aadhaar crop: aadhaar_crop.jpg
+  Selfie crop: selfie_crop.jpg
+==================================================

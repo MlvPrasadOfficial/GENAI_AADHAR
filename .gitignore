@@ -4,8 +4,7 @@ models/
 # Test images (personal/KYC data)
 files/
 
-# Pipeline run logs
-logs/
+# Pipeline run logs (tracked in git)
 *.pth
 *.onnx
 

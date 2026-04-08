@@ -1,0 +1,57 @@
+Aadhaar KYC Face Matching — Run Log
+==================================================
+Timestamp:      2026-04-05 15:02:29
+Aadhaar Image:  FILES\AADHAR\AADHAR07.pdf
+Selfie Image:   FILES\SELFIE\USER_10.jpg
+
+--- Result ---
+Match:          NO
+Confidence:     42.4%
+Cosine Score:   0.5236
+
+--- Similarity Metrics ---
+Cosine:         0.5236
+L2 Distance:    0.9761  (score: 0.2313)
+SSIM:           0.3158
+Landmark Geom:  0.2184
+Pose Diff:      6.0 deg
+Fused Score:    0.3973
+
+--- Quality ---
+Aadhaar Quality: 1.00
+Selfie Quality:  0.13
+
+--- Demographics ---
+Aadhaar: Gender=M, Age=24
+Selfie:  Gender=M, Age=21
+  Aadhaar photo appears ~3yr OLDER than selfie (unusual — verify document)
+  Gender: consistent
+
+--- VLM Guard ---
+VLM Same Person: False
+VLM Reasoning:   Bone structure differences in eye socket shape and inter-pupillary distance indicate a mismatch.
+
+--- Decision Trace ---
+  1. Enhancement: Applied Real-ESRGAN to Selfie (quality 0.13 < 0.4)
+  2. Cosine similarity: 0.5236 → UNCERTAIN zone (between 0.4 and 0.6)
+  3. Quality flag: LOW (Selfie below 0.4 threshold)
+  4. VLM guard: Invoked — cosine score in uncertain zone → VLM decides
+     VLM verdict: DIFFERENT PERSON
+  5. Final decision: NO MATCH at 42.4% confidence
+     Confidence breakdown: base 52.4% → -10 VLM rejection (uncertain zone)
+     Reason: Score in uncertain zone and VLM says different person
+
+--- Timings ---
+  load_ms....................... 32 ms
+  enhancement_ms................ 5864 ms
+  clahe_ms...................... 8 ms
+  face_processing_ms............ 0 ms
+  dual_path_ms.................. 480 ms
+  similarity_ms................. 481 ms
+  vlm_ms........................ 19228 ms
+  TOTAL......................... 26093 ms
+
+--- Face Crops ---
+  Aadhaar crop: aadhaar_crop.jpg
+  Selfie crop: selfie_crop.jpg
+==================================================
