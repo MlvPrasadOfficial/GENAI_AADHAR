@@ -137,7 +137,7 @@ flowchart TD
         RELAX["Relax thresholds<br/>-0.01/yr (max -0.10)"]
 
         subgraph VLM["VLM Guard (Ollama)"]
-            VLMCALL["HTTP POST to Ollama<br/>Qwen2.5-VL-7B"]
+            VLMCALL["HTTP POST to Ollama<br/>Qwen3-VL"]
             VLMPROMPT["Prompt: Compare bone<br/>structure, ignore aging<br/>+ age-conditioned guidance"]
             VLMPARSE["Parse JSON response<br/>(fallback: regex)"]
             VLMOUT["VLMVerdict<br/>same_person + confidence<br/>+ reasoning"]
@@ -307,7 +307,7 @@ flowchart LR
     end
 
     subgraph EXTERNAL["External Services"]
-        OLLAMA["Ollama Server<br/>Qwen2.5-VL-7B"]
+        OLLAMA["Ollama Server<br/>Qwen3-VL"]
         IF["InsightFace<br/>buffalo_l"]
         ESRGAN["Real-ESRGAN<br/>RRDBNet"]
     end

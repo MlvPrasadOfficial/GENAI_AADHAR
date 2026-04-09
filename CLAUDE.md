@@ -44,7 +44,7 @@ python main.py --batch pairs.csv --verbose
 | Face model | InsightFace buffalo_l | All-in-one: RetinaFace + ArcFace in one ONNX pack |
 | Match threshold | >= 0.60 | Calibrated on 60k-face database (2024 research) |
 | Uncertain zone | 0.40-0.60 | Escalate to VLM guard |
-| Vision LLM | Ollama + Qwen2.5-VL-7B | vLLM has NO native Windows support; Ollama is Windows-native, Qwen2.5-VL best on FaceXBench 2025 |
+| Vision LLM | Ollama + Qwen3-VL | vLLM has NO native Windows support; Ollama is Windows-native, Qwen3-VL better fine-detail perception & reasoning (2026) |
 | Python version | 3.11 | Best InsightFace + ONNX Runtime GPU compatibility |
 | NumPy | < 2.0 (pinned 1.26.4) | InsightFace not numpy 2.x compatible |
 | Confidence tuning | config.yaml `confidence_adjustments` | All score adjustments (VLM bonus/penalty, quality penalty) are configurable without code changes |
@@ -114,7 +114,7 @@ pip install insightface==0.7.3
 pip install opencv-python==4.10.0.84 Pillow==10.4.0 PyYAML==6.0.2 requests==2.32.3 tqdm==4.66.4 pytest==8.3.2 PyMuPDF==1.24.5
 
 # Ollama (already installed on this machine)
-ollama pull qwen2.5vl:7b
+ollama pull qwen3-vl
 
 # Download model weights
 python scripts/download_models.py

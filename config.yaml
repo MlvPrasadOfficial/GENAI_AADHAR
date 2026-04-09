@@ -35,7 +35,7 @@ similarity:
 vlm_guard:
   enabled: true
   ollama_url: "http://localhost:11434"
-  model: "qwen2.5vl:7b"       # Best face verification accuracy (FaceXBench 2025)
+  model: "qwen3-vl"            # Upgraded: better fine-detail perception & reasoning (2026)
   timeout_s: 300
   temperature: 0.1
 
