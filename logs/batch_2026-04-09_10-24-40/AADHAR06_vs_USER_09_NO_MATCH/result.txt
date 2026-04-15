@@ -1,0 +1,57 @@
+Aadhaar KYC Face Matching — Run Log
+==================================================
+Timestamp:      2026-04-09 10:43:26
+Aadhaar Image:  FILES\AADHAR\AADHAR06.pdf
+Selfie Image:   FILES\SELFIE\USER_09.jpg
+
+--- Result ---
+Match:          NO
+Confidence:     38.8%
+Cosine Score:   0.4876
+
+--- Similarity Metrics ---
+Cosine:         0.4876
+L2 Distance:    1.0124  (score: 0.2190)
+SSIM:           0.2255
+Landmark Geom:  0.4165
+Pose Diff:      8.9 deg
+Fused Score:    0.4168
+
+--- Quality ---
+Aadhaar Quality: 1.00
+Selfie Quality:  0.40
+
+--- Demographics ---
+Aadhaar: Gender=M, Age=38
+Selfie:  Gender=M, Age=79
+  Aadhaar photo appears ~41yr YOUNGER than selfie (older Aadhaar card likely)
+  Gender: consistent
+
+--- VLM Guard ---
+VLM Same Person: None
+VLM Reasoning:   Ollama request failed (timeout or HTTP error)
+
+--- Decision Trace ---
+  1. Enhancement: Skipped — both images above quality threshold (Aadhaar=1.00, Selfie=0.40, threshold=0.4)
+  2. Cosine similarity: 0.4876 → UNCERTAIN zone (between 0.4 and 0.6)
+  2b. Age-gap relaxation: 41yr gap → threshold relaxed by 0.100 (effective: match=0.500, uncertain=0.300)
+  3. Quality flag: OK (both images above 0.4 threshold)
+  4. VLM guard: Invoked — cosine score in uncertain zone → VLM decides
+     VLM verdict: UNAVAILABLE (Ollama timeout or error)
+  5. Final decision: NO MATCH at 38.8% confidence
+     Reason: Score in uncertain zone, VLM unavailable — conservative rejection
+
+--- Timings ---
+  load_ms....................... 35 ms
+  enhancement_ms................ 40 ms
+  clahe_ms...................... 10 ms
+  face_processing_ms............ 0 ms
+  dual_path_ms.................. 570 ms
+  similarity_ms................. 573 ms
+  vlm_ms........................ 302092 ms
+  TOTAL......................... 303320 ms
+
+--- Face Crops ---
+  Aadhaar crop: aadhaar_crop.jpg
+  Selfie crop: selfie_crop.jpg
+==================================================
