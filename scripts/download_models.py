@@ -10,6 +10,10 @@ Usage:
     python scripts/download_models.py --insightface-only
 """
 
+# Must be set before any import that touches matplotlib (e.g. InsightFace)
+import os as _os
+_os.environ.setdefault("MPLBACKEND", "Agg")
+
 import argparse
 import os
 import sys
