@@ -67,10 +67,9 @@ def sample_config():
         },
         "vlm_guard": {
             "enabled": True,
-            "ollama_url": "http://localhost:11434",
-            "model": "qwen2.5vl:7b",
-            "timeout_s": 30,
+            "model_path": "models/qwen2.5-vl-7b-instruct",
             "temperature": 0.1,
+            "max_new_tokens": 256,
         },
         "confidence_adjustments": {
             "vlm_confirmation_bonus": 8.0,

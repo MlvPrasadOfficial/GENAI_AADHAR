@@ -31,7 +31,7 @@ python main.py --batch pairs.csv --verbose
 4b. `pipeline/orchestrator.py` — Dual-path: compare original vs preprocessed Aadhaar, keep higher cosine score
 4c. `pipeline/adaface.py` — Optional AdaFace second model with score fusion
 4d. `pipeline/score_norm.py` — S-norm score calibration against impostor cohort
-5. `pipeline/vlm_guard.py` — Ollama VLM guard (URL-validated, strict JSON parsing, age-conditioned prompting)
+5. `pipeline/vlm_guard.py` — HuggingFace Qwen2.5-VL-7B-Instruct guard (local inference, strict JSON parsing, age-conditioned prompting)
 6. `pipeline/orchestrator.py` — Wires all stages, age-gated thresholds, configurable confidence adjustments
 6b. `pipeline/confidence_calibrator.py` — Platt scaling for calibrated confidence probabilities
 7. `utils/result_logger.py` — Per-run log folder with hash-based deduplication and decision trace
@@ -44,7 +44,7 @@ python main.py --batch pairs.csv --verbose
 | Face model | InsightFace buffalo_l | All-in-one: RetinaFace + ArcFace in one ONNX pack |
 | Match threshold | >= 0.60 | Calibrated on 60k-face database (2024 research) |
 | Uncertain zone | 0.40-0.60 | Escalate to VLM guard |
-| Vision LLM | Ollama + Qwen3-VL | vLLM has NO native Windows support; Ollama is Windows-native, Qwen3-VL better fine-detail perception & reasoning (2026) |
+| Vision LLM | HuggingFace Qwen2.5-VL-7B-Instruct | Direct local inference via transformers, no Ollama dependency, FP16 on 20GB+ VRAM |
 | Python version | 3.11 | Best InsightFace + ONNX Runtime GPU compatibility |
 | NumPy | < 2.0 (pinned 1.26.4) | InsightFace not numpy 2.x compatible |
 | Confidence tuning | config.yaml `confidence_adjustments` | All score adjustments (VLM bonus/penalty, quality penalty) are configurable without code changes |
@@ -66,7 +66,7 @@ python main.py --batch pairs.csv --verbose
 
 ## Similarity Thresholds
 - `cosine_score >= match_threshold (0.60)` → **MATCH** (skip VLM unless quality is low)
-- `uncertain_low (0.40) <= cosine_score < match_threshold` → **UNCERTAIN** → invoke Ollama VLM guard
+- `uncertain_low (0.40) <= cosine_score < match_threshold` → **UNCERTAIN** → invoke VLM guard (Qwen2.5-VL)
 - `cosine_score < uncertain_low (0.40)` → **NO MATCH** (skip VLM)
 
 ## Age-Gap Threshold Relaxation
@@ -94,11 +94,10 @@ confidence_adjustments:
 - `det_thresh_fallback` in [0.0, 1.0] and < `det_thresh`
 - `upscale` must be positive
 - `quality_threshold` in [0.0, 1.0]
-- `timeout_s` must be positive
+- `max_new_tokens` must be positive integer
 - `confidence_adjustments` values must be numeric
 - `age_gap_threshold` non-negative, `age_gap_relaxation_per_year` non-negative
 - `max_age_gap_relaxation` won't push threshold below `uncertain_low`
-- Ollama URL must have valid http/https scheme and hostname
 - `clahe_clip_limit` must be positive, `clahe_tile_size` must be positive integer
 
 ## Dependencies Setup (one-time)
@@ -112,9 +111,7 @@ pip install basicsr==1.4.2
 pip install realesrgan==0.3.0
 pip install insightface==0.7.3
 pip install opencv-python==4.10.0.84 Pillow==10.4.0 PyYAML==6.0.2 requests==2.32.3 tqdm==4.66.4 pytest==8.3.2 PyMuPDF==1.24.5
-
-# Ollama (already installed on this machine)
-ollama pull qwen3-vl
+pip install transformers accelerate qwen-vl-utils
 
 # Download model weights
 python scripts/download_models.py
@@ -138,7 +135,7 @@ pytest tests/ -v -m "not integration"        # all unit tests (241 tests, no GPU
 pytest tests/test_similarity.py -v           # similarity + L2 + SSIM + landmarks + fusion (43 tests)
 pytest tests/test_new_features.py -v         # cache, S-norm, calibrator, crop restore, adaptive, AdaFace (36 tests)
 pytest tests/test_config_loader.py -v        # config validation (24 tests)
-pytest tests/test_vlm_guard.py -v            # VLM parsing + URL + age prompt (25 tests)
+pytest tests/test_vlm_guard.py -v            # VLM parsing + inference + age prompt (22 tests)
 pytest tests/test_image_utils.py -v          # image I/O + input validation + CLAHE + grayscale + dimensions + PDF (31 tests)
 pytest tests/test_result_logger.py -v        # audit log + age-gap trace (11 tests)
 pytest tests/test_enhancement.py -v          # quality scoring + downscale (15 tests)
@@ -156,7 +153,7 @@ pipeline/orchestrator.py          Main pipeline runner (caching, crop restore, S
 pipeline/enhancement.py           Real-ESRGAN wrapper (GPU warning, warns when unavailable)
 pipeline/face_processor.py        InsightFace wrapper (flip/ensemble TTA, multi-face warning)
 pipeline/similarity.py            Cosine + L2 + SSIM + landmarks + fused score, adaptive thresholds
-pipeline/vlm_guard.py             Ollama VLM HTTP client (age-conditioned prompting)
+pipeline/vlm_guard.py             HuggingFace Qwen2.5-VL local inference (age-conditioned prompting)
 pipeline/score_norm.py            S-norm score calibration (impostor cohort z-normalization)
 pipeline/confidence_calibrator.py Platt scaling confidence calibration
 pipeline/crop_restore.py          Crop-level face restoration (bilateral/GFPGAN)
@@ -176,7 +173,7 @@ tests/                            241 unit tests across 11 test files
 - If `onnxruntime` (CPU) is installed alongside `onnxruntime-gpu`, GPU won't be used. Fix: `pip uninstall onnxruntime`
 - InsightFace uses `INSIGHTFACE_ROOT` env var to locate buffalo_l weights
 - Aadhaar cards may be photographed sideways — EXIF correction handles this
-- Ollama must be running: `ollama serve` (auto-starts on Windows after install)
+- VLM guard requires 20GB+ VRAM for FP16 inference (Qwen2.5-VL-7B-Instruct is ~16.6GB)
 - buffalo_l is non-commercial research license only
 - Enhancement silently skips if model weights are missing — check logs for warnings
 - VLM response parsing falls back to regex if model returns non-JSON — check `raw_response` in logs

@@ -11,8 +11,8 @@ def _base_config():
         "face": {"model_pack": "buffalo_l", "insightface_root": "x", "det_size": [640, 640],
                  "det_thresh": 0.7, "det_thresh_fallback": 0.5, "ctx_id": 0},
         "similarity": {"match_threshold": 0.60, "uncertain_low": 0.40},
-        "vlm_guard": {"enabled": False, "ollama_url": "http://localhost:11434",
-                      "model": "x", "timeout_s": 30, "temperature": 0.1},
+        "vlm_guard": {"enabled": False, "model_path": "models/qwen2.5-vl-7b-instruct",
+                      "temperature": 0.1, "max_new_tokens": 256},
     }
 
 
@@ -100,16 +100,16 @@ class TestValidation:
         with pytest.raises(ValueError, match="quality_threshold"):
             _validate(cfg)
 
-    def test_timeout_zero_raises(self):
+    def test_max_new_tokens_zero_raises(self):
         cfg = _base_config()
-        cfg["vlm_guard"]["timeout_s"] = 0
-        with pytest.raises(ValueError, match="timeout_s"):
+        cfg["vlm_guard"]["max_new_tokens"] = 0
+        with pytest.raises(ValueError, match="max_new_tokens"):
             _validate(cfg)
 
-    def test_timeout_negative_raises(self):
+    def test_max_new_tokens_negative_raises(self):
         cfg = _base_config()
-        cfg["vlm_guard"]["timeout_s"] = -5
-        with pytest.raises(ValueError, match="timeout_s"):
+        cfg["vlm_guard"]["max_new_tokens"] = -5
+        with pytest.raises(ValueError, match="max_new_tokens"):
             _validate(cfg)
 
     def test_fallback_below_zero_raises(self):

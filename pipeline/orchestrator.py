@@ -111,6 +111,7 @@ class KYCPipelineOrchestrator:
         logger.info("Loading pipeline models...")
         self.enhancer.load()
         self.processor.load()
+        self.vlm.load()
         self.crop_restorer.load()
         self.adaface.load()
         self.snorm.load_cohort()

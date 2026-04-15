@@ -113,8 +113,10 @@ def _validate(config: dict) -> None:
 
     # --- vlm_guard ---
     vlm = config["vlm_guard"]
-    if "timeout_s" in vlm and vlm["timeout_s"] <= 0:
-        raise ValueError(f"vlm_guard.timeout_s must be positive, got {vlm['timeout_s']}")
+    if "max_new_tokens" in vlm:
+        mnt = vlm["max_new_tokens"]
+        if not isinstance(mnt, int) or mnt <= 0:
+            raise ValueError(f"vlm_guard.max_new_tokens must be a positive integer, got {mnt}")
 
     # --- preprocessing (optional section) ---
     if "preprocessing" in config:

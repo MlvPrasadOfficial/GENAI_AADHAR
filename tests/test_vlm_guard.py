@@ -1,4 +1,4 @@
-"""Tests for pipeline/vlm_guard.py — uses mocked HTTP calls, no Ollama needed."""
+"""Tests for pipeline/vlm_guard.py — uses mocked model, no GPU needed."""
 
 from unittest.mock import MagicMock, patch
 
@@ -113,114 +113,133 @@ class TestVLMGuardParsing:
         assert verdict.confidence == "unknown"
 
 
-class TestVLMGuardURLValidation:
-    def test_invalid_scheme_raises(self, sample_config):
-        sample_config["vlm_guard"]["ollama_url"] = "ftp://localhost:11434"
-        with pytest.raises(ValueError, match="scheme"):
-            VLMGuard(sample_config)
+class TestVLMGuardNotLoaded:
+    def test_not_loaded_returns_none(self, guard, face_crops):
+        """If model not loaded, verify should return None."""
+        verdict = guard.verify(*face_crops, cosine_score=0.55)
+        assert verdict.same_person is None
+        assert "not loaded" in verdict.reasoning
 
-    def test_missing_host_raises(self, sample_config):
-        sample_config["vlm_guard"]["ollama_url"] = "http://"
-        with pytest.raises(ValueError, match="host"):
-            VLMGuard(sample_config)
 
-    def test_valid_url_accepted(self, sample_config):
-        sample_config["vlm_guard"]["ollama_url"] = "http://192.168.1.100:11434"
+class TestVLMGuardInference:
+    def test_successful_inference(self, sample_config, face_crops):
+        """Mock the full inference pipeline."""
         guard = VLMGuard(sample_config)
-        assert guard.ollama_url == "http://192.168.1.100:11434"
+
+        mock_processor = MagicMock()
+        mock_model = MagicMock()
+
+        guard._processor = mock_processor
+        guard._model = mock_model
+
+        mock_processor.apply_chat_template.return_value = "formatted prompt"
+        mock_inputs = MagicMock()
+        mock_inputs.input_ids.shape = [1, 10]
+        mock_inputs.to.return_value = mock_inputs
+        mock_processor.return_value = mock_inputs
+
+        import torch
+        mock_model.device = torch.device("cpu")
+        mock_model.generate.return_value = torch.tensor([[1, 2, 3, 4, 5]])
+
+        mock_processor.decode.return_value = '{"same_person": true, "confidence": "high", "reasoning": "Eyes match", "quality_issues": null}'
+
+        verdict = guard.verify(*face_crops, cosine_score=0.55)
+        assert verdict.same_person is True
+        assert verdict.reasoning == "Eyes match"
+
+    def test_inference_error_returns_none(self, sample_config, face_crops):
+        """If inference raises, should return None gracefully."""
+        guard = VLMGuard(sample_config)
+        guard._model = MagicMock()
+        guard._processor = MagicMock()
+        guard._processor.apply_chat_template.side_effect = RuntimeError("OOM")
+
+        verdict = guard.verify(*face_crops, cosine_score=0.55)
+        assert verdict.same_person is None
+        assert "error" in verdict.reasoning.lower()
 
 
 class TestVLMGuardAgePrompt:
     """Tests for age-conditioned VLM prompt injection."""
 
-    @patch("pipeline.vlm_guard.requests.post")
-    def test_no_age_supplement_when_gap_lte_3(self, mock_post, guard, face_crops):
+    def test_no_age_supplement_when_gap_lte_3(self, guard, face_crops):
         """Gap <= 3 years should NOT inject age supplement."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "message": {"content": '{"same_person": true, "confidence": "high", "reasoning": "ok", "quality_issues": null}'}
-        }
-        mock_resp.raise_for_status = MagicMock()
-        mock_post.return_value = mock_resp
+        guard._model = MagicMock()
+        guard._processor = MagicMock()
+        guard._processor.apply_chat_template.return_value = "prompt"
+        mock_inputs = MagicMock()
+        mock_inputs.input_ids.shape = [1, 10]
+        mock_inputs.to.return_value = mock_inputs
+        guard._processor.return_value = mock_inputs
+
+        import torch
+        guard._model.device = torch.device("cpu")
+        guard._model.generate.return_value = torch.tensor([[1, 2, 3]])
+        guard._processor.decode.return_value = '{"same_person": true, "confidence": "high", "reasoning": "ok", "quality_issues": null}'
 
         guard.verify(*face_crops, cosine_score=0.55, aadhaar_age=30, selfie_age=32)
-        sent_prompt = mock_post.call_args[1]["json"]["messages"][0]["content"]
-        assert "AGE CONTEXT" not in sent_prompt
+        sent_messages = guard._processor.apply_chat_template.call_args[0][0]
+        prompt_text = sent_messages[0]["content"][-1]["text"]
+        assert "AGE CONTEXT" not in prompt_text
 
-    @patch("pipeline.vlm_guard.requests.post")
-    def test_age_supplement_injected_when_gap_gt_3(self, mock_post, guard, face_crops):
+    def test_age_supplement_injected_when_gap_gt_3(self, guard, face_crops):
         """Gap > 3 years should inject age supplement with structural features guidance."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "message": {"content": '{"same_person": true, "confidence": "high", "reasoning": "ok", "quality_issues": null}'}
-        }
-        mock_resp.raise_for_status = MagicMock()
-        mock_post.return_value = mock_resp
+        guard._model = MagicMock()
+        guard._processor = MagicMock()
+        guard._processor.apply_chat_template.return_value = "prompt"
+        mock_inputs = MagicMock()
+        mock_inputs.input_ids.shape = [1, 10]
+        mock_inputs.to.return_value = mock_inputs
+        guard._processor.return_value = mock_inputs
+
+        import torch
+        guard._model.device = torch.device("cpu")
+        guard._model.generate.return_value = torch.tensor([[1, 2, 3]])
+        guard._processor.decode.return_value = '{"same_person": true, "confidence": "high", "reasoning": "ok", "quality_issues": null}'
 
         guard.verify(*face_crops, cosine_score=0.55, aadhaar_age=25, selfie_age=35)
-        sent_prompt = mock_post.call_args[1]["json"]["messages"][0]["content"]
-        assert "AGE CONTEXT" in sent_prompt
-        assert "bone geometry" in sent_prompt
+        sent_messages = guard._processor.apply_chat_template.call_args[0][0]
+        prompt_text = sent_messages[0]["content"][-1]["text"]
+        assert "AGE CONTEXT" in prompt_text
+        assert "bone geometry" in prompt_text
 
-    @patch("pipeline.vlm_guard.requests.post")
-    def test_age_gap_value_in_prompt(self, mock_post, guard, face_crops):
+    def test_age_gap_value_in_prompt(self, guard, face_crops):
         """The actual age gap number should appear in the injected supplement."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "message": {"content": '{"same_person": true, "confidence": "high", "reasoning": "ok", "quality_issues": null}'}
-        }
-        mock_resp.raise_for_status = MagicMock()
-        mock_post.return_value = mock_resp
+        guard._model = MagicMock()
+        guard._processor = MagicMock()
+        guard._processor.apply_chat_template.return_value = "prompt"
+        mock_inputs = MagicMock()
+        mock_inputs.input_ids.shape = [1, 10]
+        mock_inputs.to.return_value = mock_inputs
+        guard._processor.return_value = mock_inputs
+
+        import torch
+        guard._model.device = torch.device("cpu")
+        guard._model.generate.return_value = torch.tensor([[1, 2, 3]])
+        guard._processor.decode.return_value = '{"same_person": true, "confidence": "high", "reasoning": "ok", "quality_issues": null}'
 
         guard.verify(*face_crops, cosine_score=0.55, aadhaar_age=22, selfie_age=34)
-        sent_prompt = mock_post.call_args[1]["json"]["messages"][0]["content"]
-        assert "12 year gap" in sent_prompt
+        sent_messages = guard._processor.apply_chat_template.call_args[0][0]
+        prompt_text = sent_messages[0]["content"][-1]["text"]
+        assert "12 year gap" in prompt_text
 
-    @patch("pipeline.vlm_guard.requests.post")
-    def test_no_supplement_when_age_unknown(self, mock_post, guard, face_crops):
+    def test_no_supplement_when_age_unknown(self, guard, face_crops):
         """Age=0 (unknown) should NOT inject supplement even with large gap."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "message": {"content": '{"same_person": true, "confidence": "high", "reasoning": "ok", "quality_issues": null}'}
-        }
-        mock_resp.raise_for_status = MagicMock()
-        mock_post.return_value = mock_resp
+        guard._model = MagicMock()
+        guard._processor = MagicMock()
+        guard._processor.apply_chat_template.return_value = "prompt"
+        mock_inputs = MagicMock()
+        mock_inputs.input_ids.shape = [1, 10]
+        mock_inputs.to.return_value = mock_inputs
+        guard._processor.return_value = mock_inputs
+
+        import torch
+        guard._model.device = torch.device("cpu")
+        guard._model.generate.return_value = torch.tensor([[1, 2, 3]])
+        guard._processor.decode.return_value = '{"same_person": true, "confidence": "high", "reasoning": "ok", "quality_issues": null}'
 
         guard.verify(*face_crops, cosine_score=0.55, aadhaar_age=0, selfie_age=35)
-        sent_prompt = mock_post.call_args[1]["json"]["messages"][0]["content"]
-        assert "AGE CONTEXT" not in sent_prompt
-
-
-class TestVLMGuardHTTP:
-    @patch("pipeline.vlm_guard.requests.post")
-    def test_successful_call(self, mock_post, guard, face_crops):
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "message": {
-                "content": '{"same_person": true, "confidence": "high", "reasoning": "Eyes match", "quality_issues": null}'
-            }
-        }
-        mock_resp.raise_for_status = MagicMock()
-        mock_post.return_value = mock_resp
-
-        verdict = guard.verify(*face_crops, cosine_score=0.55)
-        assert verdict.same_person is True
-        assert verdict.reasoning == "Eyes match"
-        mock_post.assert_called_once()
-
-    @patch("pipeline.vlm_guard.requests.post")
-    def test_connection_error_returns_none(self, mock_post, guard, face_crops):
-        import requests as req
-        mock_post.side_effect = req.ConnectionError("refused")
-
-        verdict = guard.verify(*face_crops, cosine_score=0.55)
-        assert verdict.same_person is None
-        assert "unreachable" in verdict.reasoning
-
-    @patch("pipeline.vlm_guard.requests.post")
-    def test_timeout_returns_none(self, mock_post, guard, face_crops):
-        import requests as req
-        mock_post.side_effect = req.Timeout("timed out")
-
-        verdict = guard.verify(*face_crops, cosine_score=0.55)
-        assert verdict.same_person is None
+        sent_messages = guard._processor.apply_chat_template.call_args[0][0]
+        prompt_text = sent_messages[0]["content"][-1]["text"]
+        assert "AGE CONTEXT" not in prompt_text

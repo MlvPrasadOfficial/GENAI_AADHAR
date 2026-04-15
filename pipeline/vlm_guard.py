@@ -1,12 +1,11 @@
-"""Vision LLM guard using Ollama for face verification.
+"""Vision LLM guard using Qwen2.5-VL-7B-Instruct for face verification.
 
 Acts as a secondary verification layer invoked only when:
-  - Cosine similarity is in the uncertain zone (0.40–0.60), OR
+  - Cosine similarity is in the uncertain zone (0.40-0.60), OR
   - Image quality is low even with high cosine score
 
-The VLM model is configurable (default: Qwen2.5-VL-7B).
-Uses Ollama's HTTP API (Windows-native, no WSL required).
-Degrades gracefully: returns VLMVerdict(same_person=None) if Ollama is unavailable.
+Uses HuggingFace transformers for local inference (no Ollama).
+Degrades gracefully: returns VLMVerdict(same_person=None) if model is unavailable.
 """
 
 import json
@@ -14,10 +13,8 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Literal
-from urllib.parse import urlparse
 
 import numpy as np
-import requests
 
 from utils.image_utils import bgr_to_base64_jpeg
 
@@ -68,7 +65,7 @@ _VALID_CONFIDENCES = {"high", "medium", "low", "unknown"}
 
 
 class VLMGuard:
-    """Ollama-based face verification guard (model-agnostic).
+    """HuggingFace Qwen2.5-VL-7B-Instruct face verification guard.
 
     Usage:
         guard = VLMGuard(config)
@@ -78,18 +75,51 @@ class VLMGuard:
     def __init__(self, config: dict):
         cfg = config["vlm_guard"]
         self.enabled: bool = cfg["enabled"]
-        self.model: str = cfg["model"]
-        self.timeout_s: int = cfg["timeout_s"]
+        self.model_path: str = cfg.get("model_path", "Qwen/Qwen2.5-VL-7B-Instruct")
         self.temperature: float = cfg.get("temperature", 0.1)
+        self.max_new_tokens: int = cfg.get("max_new_tokens", 256)
+        self._model = None
+        self._processor = None
 
-        # Validate Ollama URL
-        url = cfg["ollama_url"].rstrip("/")
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            raise ValueError(f"Invalid Ollama URL scheme: {parsed.scheme!r} (expected http/https)")
-        if not parsed.hostname:
-            raise ValueError(f"Invalid Ollama URL: missing host in {url!r}")
-        self.ollama_url: str = url
+    def load(self):
+        """Load the Qwen2.5-VL model and processor from local path or HuggingFace."""
+        if not self.enabled:
+            logger.info("VLM guard disabled, skipping model load")
+            return
+
+        try:
+            from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+            import torch
+
+            logger.info("Loading VLM model from %s ...", self.model_path)
+
+            self._processor = AutoProcessor.from_pretrained(
+                self.model_path,
+                trust_remote_code=True,
+            )
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            dtype = torch.float16 if device == "cuda" else torch.float32
+
+            self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                self.model_path,
+                torch_dtype=dtype,
+                device_map="auto" if device == "cuda" else None,
+                trust_remote_code=True,
+            )
+
+            if device == "cpu":
+                self._model = self._model.to(device)
+
+            self._model.eval()
+            logger.info("VLM model loaded on %s (%s)", device, dtype)
+
+        except ImportError:
+            logger.warning("transformers or qwen-vl-utils not installed. VLM guard disabled.")
+            self.enabled = False
+        except Exception as e:
+            logger.warning("Failed to load VLM model: %s. VLM guard disabled.", e)
+            self.enabled = False
 
     def verify(
         self,
@@ -99,7 +129,7 @@ class VLMGuard:
         aadhaar_age: int = 0,
         selfie_age: int = 0,
     ) -> VLMVerdict:
-        """Send both face crops to Ollama LLaVA for biometric verification.
+        """Send both face crops to local VLM for biometric verification.
 
         Args:
             aadhaar_crop: Aligned 112x112 BGR face crop from Aadhaar card.
@@ -109,7 +139,7 @@ class VLMGuard:
             selfie_age: Estimated age from selfie face (0 if unknown).
 
         Returns:
-            VLMVerdict. same_person is None if Ollama is unreachable.
+            VLMVerdict. same_person is None if model is unavailable.
         """
         if not self.enabled:
             return VLMVerdict(
@@ -117,8 +147,12 @@ class VLMGuard:
                 reasoning="VLM guard disabled", quality_issues=None, raw_response=""
             )
 
-        b64_aadhaar = bgr_to_base64_jpeg(aadhaar_crop)
-        b64_selfie = bgr_to_base64_jpeg(selfie_crop)
+        if self._model is None or self._processor is None:
+            return VLMVerdict(
+                same_person=None, confidence="unknown",
+                reasoning="VLM model not loaded",
+                quality_issues=None, raw_response="",
+            )
 
         prompt = VLM_PROMPT.format(score=cosine_score)
         age_gap = abs(aadhaar_age - selfie_age)
@@ -127,49 +161,60 @@ class VLMGuard:
                 aadhaar_age=aadhaar_age, selfie_age=selfie_age, age_gap=age_gap,
             )
 
-        payload = {
-            "model": self.model,
-            "messages": [
+        try:
+            import torch
+            import cv2
+            from PIL import Image
+            import io
+
+            # Convert BGR crops to PIL Images
+            aadhaar_rgb = cv2.cvtColor(aadhaar_crop, cv2.COLOR_BGR2RGB)
+            selfie_rgb = cv2.cvtColor(selfie_crop, cv2.COLOR_BGR2RGB)
+            pil_aadhaar = Image.fromarray(aadhaar_rgb)
+            pil_selfie = Image.fromarray(selfie_rgb)
+
+            # Build messages in Qwen2.5-VL chat format
+            messages = [
                 {
                     "role": "user",
-                    "content": prompt,
-                    "images": [b64_aadhaar, b64_selfie],
+                    "content": [
+                        {"type": "image", "image": pil_aadhaar},
+                        {"type": "image", "image": pil_selfie},
+                        {"type": "text", "text": prompt},
+                    ],
                 }
-            ],
-            "stream": False,
-            "options": {"temperature": self.temperature},
-        }
+            ]
 
-        # Free base64 strings before blocking on HTTP (can be several MB each)
-        del b64_aadhaar, b64_selfie
+            # Process inputs
+            text = self._processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            inputs = self._processor(
+                text=[text],
+                images=[pil_aadhaar, pil_selfie],
+                padding=True,
+                return_tensors="pt",
+            )
+            inputs = inputs.to(self._model.device)
 
-        try:
-            resp = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json=payload,
-                timeout=self.timeout_s,
-            )
-            resp.raise_for_status()
-            raw_text = resp.json()["message"]["content"]
-        except requests.ConnectionError:
-            logger.warning("Ollama not reachable at %s", self.ollama_url)
+            # Generate
+            with torch.no_grad():
+                output_ids = self._model.generate(
+                    **inputs,
+                    max_new_tokens=self.max_new_tokens,
+                    temperature=self.temperature,
+                    do_sample=self.temperature > 0,
+                )
+
+            # Decode only generated tokens
+            generated_ids = output_ids[0][inputs.input_ids.shape[1]:]
+            raw_text = self._processor.decode(generated_ids, skip_special_tokens=True)
+
+        except Exception as e:
+            logger.warning("VLM inference failed: %s", e)
             return VLMVerdict(
                 same_person=None, confidence="unknown",
-                reasoning="Ollama server unreachable",
-                quality_issues=None, raw_response="",
-            )
-        except (requests.Timeout, requests.HTTPError) as e:
-            logger.warning("Ollama HTTP error: %s", e)
-            return VLMVerdict(
-                same_person=None, confidence="unknown",
-                reasoning="Ollama request failed (timeout or HTTP error)",
-                quality_issues=None, raw_response="",
-            )
-        except (KeyError, ValueError) as e:
-            logger.warning("Ollama response malformed: %s", e)
-            return VLMVerdict(
-                same_person=None, confidence="unknown",
-                reasoning="Ollama returned unexpected response format",
+                reasoning=f"VLM inference error: {e}",
                 quality_issues=None, raw_response="",
             )
 
@@ -180,7 +225,7 @@ class VLMGuard:
 
         Strategy 1: Direct JSON parse with required-key validation.
         Strategy 2: Regex fallback (only for same_person + confidence).
-        Strategy 3: Give up → same_person=None.
+        Strategy 3: Give up -> same_person=None.
         """
         # Strategy 1: direct JSON parse
         try:

@@ -34,10 +34,9 @@ similarity:
 
 vlm_guard:
   enabled: true
-  ollama_url: "http://localhost:11434"
-  model: "qwen2.5vl:7b"        # Best face verification accuracy (FaceXBench 2025)
-  timeout_s: 300
+  model_path: "models/qwen2.5-vl-7b-instruct"  # Local HuggingFace model path
   temperature: 0.1
+  max_new_tokens: 256
 
 # AdaFace — quality-adaptive second model for score fusion
 adaface:
