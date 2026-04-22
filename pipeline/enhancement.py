@@ -75,7 +75,7 @@ class ImageEnhancer:
             scale=4,
             model_path=str(model_path),
             model=model,
-            tile=512,       # tile-based processing to prevent GPU OOM
+            tile=256,       # small tiles to survive VRAM pressure from VLM (~17GB for Qwen2.5-VL-7B)
             tile_pad=10,
             pre_pad=0,
             half=half,
@@ -136,9 +136,25 @@ class ImageEnhancer:
         image = self._downscale_if_needed(image)
 
         try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             output, _ = self._upsampler.enhance(image, outscale=self.upscale)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             return output
         except Exception as e:
+            # On OOM, return original image instead of crashing the pipeline.
+            # The pipeline downstream still has the original + preprocessed paths.
+            import torch
+            if "out of memory" in str(e).lower() or "output_tile" in str(e):
+                logger.warning(
+                    "Real-ESRGAN OOM — skipping enhancement for this image. "
+                    "Consider reducing VLM precision or tile size further. (%s)", e,
+                )
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                return image
             raise EnhancementError(f"Real-ESRGAN enhancement failed: {e}") from e
 
     def maybe_enhance(
