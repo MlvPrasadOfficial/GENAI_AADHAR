@@ -38,6 +38,7 @@ class ImageEnhancer:
         self.model_path: str = cfg["model_path"]
         self.upscale: int = cfg["upscale"]
         self.quality_threshold: float = cfg["quality_threshold"]
+        self.force_enhance_aadhaar: bool = cfg.get("force_enhance_aadhaar", False)
         self._upsampler = None
 
     def load(self) -> None:
@@ -140,26 +141,33 @@ class ImageEnhancer:
         except Exception as e:
             raise EnhancementError(f"Real-ESRGAN enhancement failed: {e}") from e
 
-    def maybe_enhance(self, image: np.ndarray) -> tuple[np.ndarray, float]:
+    def maybe_enhance(
+        self, image: np.ndarray, source: str = "image",
+    ) -> tuple[np.ndarray, float]:
         """Assess quality and enhance only if needed.
 
         Args:
             image: BGR uint8 numpy array.
+            source: "aadhaar" | "selfie" | "image". When "aadhaar" and
+                force_enhance_aadhaar is set, enhancement runs unconditionally
+                (printed cards are categorically low-quality even when Laplacian
+                variance passes the gate).
 
         Returns:
             Tuple of (possibly enhanced image, quality score before enhancement).
         """
         score = self.quality_score(image)
-        if score < self.quality_threshold:
+        force = self.force_enhance_aadhaar and source == "aadhaar"
+        if force or score < self.quality_threshold:
             if self.enabled and self._upsampler is not None:
-                logger.info("Quality %.2f < %.2f — enhancing", score, self.quality_threshold)
+                reason = "forced (aadhaar)" if force else f"quality {score:.2f} < {self.quality_threshold:.2f}"
+                logger.info("Enhancing — %s", reason)
                 image = self.enhance(image)
             else:
                 logger.warning(
-                    "Quality %.2f < %.2f but enhancement unavailable "
+                    "Enhancement requested (force=%s, score=%.2f) but unavailable "
                     "(enabled=%s, model_loaded=%s)",
-                    score, self.quality_threshold,
-                    self.enabled, self._upsampler is not None,
+                    force, score, self.enabled, self._upsampler is not None,
                 )
         else:
             logger.debug("Quality %.2f — skipping enhancement", score)

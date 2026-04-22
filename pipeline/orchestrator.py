@@ -17,11 +17,12 @@ from pipeline.crop_restore import CropRestorer
 from pipeline.enhancement import ImageEnhancer
 from pipeline.face_processor import FaceProcessor
 from pipeline.score_norm import SNormCalibrator
+from pipeline.secondary_face import SecondaryFaceEmbedder
 from pipeline.similarity import SimilarityScorer
 from pipeline.vlm_guard import VLMGuard
 from utils.embedding_cache import EmbeddingCache
 from utils.exceptions import NoFaceDetectedError, PipelineError
-from utils.image_utils import apply_clahe, bytes_to_bgr, to_grayscale_bgr
+from utils.image_utils import apply_clahe, bytes_to_bgr, match_histogram, to_grayscale_bgr
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +74,18 @@ class KYCPipelineOrchestrator:
         self.config = config
         self.enhancer = ImageEnhancer(config)
         self.processor = FaceProcessor(config)
+        self.secondary = SecondaryFaceEmbedder(config)
         self.scorer = SimilarityScorer(config)
         self.vlm = VLMGuard(config)
         self.snorm = SNormCalibrator(config)
         self.calibrator = ConfidenceCalibrator(config)
         self.crop_restorer = CropRestorer(config)
         self.adaface = AdaFaceModel(config)
+
+        # Ensemble config
+        face_cfg = config.get("face", {})
+        self._ensemble_strategy: str = face_cfg.get("ensemble_strategy", "max")
+        self._secondary_weight: float = face_cfg.get("secondary_weight", 0.5)
         self.embedding_cache = EmbeddingCache(
             max_size=config.get("cache", {}).get("max_size", 64)
         )
@@ -91,6 +98,10 @@ class KYCPipelineOrchestrator:
         self._quality_penalty: float = ca.get("quality_penalty", -5.0)
         self._age_gap_vlm_bonus: float = ca.get("age_gap_vlm_bonus", 5.0)
         self._gender_mismatch_penalty: float = ca.get("gender_mismatch_penalty", 0.0)
+        # VLM soft-override: when cosine is strong, do not let a false VLM verdict fully flip the match.
+        # Printed-card IPD/landmarks are unreliable and VLM over-rejects on those signals.
+        self._vlm_soft_override_cosine: float = ca.get("vlm_soft_override_cosine", 0.50)
+        self._vlm_soft_override_penalty: float = ca.get("vlm_soft_override_penalty", -5.0)
 
         # Preprocessing options
         preproc = config.get("preprocessing", {})
@@ -99,6 +110,7 @@ class KYCPipelineOrchestrator:
         self._clahe_tile_size: int = preproc.get("clahe_tile_size", 8)
         self._dual_path: bool = preproc.get("dual_path", False)
         self._grayscale_normalize: bool = preproc.get("grayscale_normalize", False)
+        self._histogram_matching: bool = preproc.get("histogram_matching", False)
 
         # Age-gap threshold relaxation
         sim = config.get("similarity", {})
@@ -111,6 +123,7 @@ class KYCPipelineOrchestrator:
         logger.info("Loading pipeline models...")
         self.enhancer.load()
         self.processor.load()
+        self.secondary.load()
         self.vlm.load()
         self.crop_restorer.load()
         self.adaface.load()
@@ -145,8 +158,8 @@ class KYCPipelineOrchestrator:
 
             # --- Stage 2: Quality assessment + enhancement ---
             t0 = time.perf_counter()
-            aadhaar_img, aadhaar_quality = self.enhancer.maybe_enhance(aadhaar_img)
-            selfie_img, selfie_quality = self.enhancer.maybe_enhance(selfie_img)
+            aadhaar_img, aadhaar_quality = self.enhancer.maybe_enhance(aadhaar_img, source="aadhaar")
+            selfie_img, selfie_quality = self.enhancer.maybe_enhance(selfie_img, source="selfie")
             timings["enhancement_ms"] = _elapsed_ms(t0)
 
             # --- Stage 2b: CLAHE contrast normalization for Aadhaar ---
@@ -164,6 +177,15 @@ class KYCPipelineOrchestrator:
                 aadhaar_img = to_grayscale_bgr(aadhaar_img)
                 selfie_img = to_grayscale_bgr(selfie_img)
                 logger.info("Grayscale normalization applied to both images")
+
+            # --- Stage 2d: Histogram matching (color/lighting domain alignment) ---
+            # Shift the Aadhaar tonal distribution toward the selfie before embedding.
+            # Reduces the printed-card vs live-camera domain gap that pushes cosine down.
+            if self._histogram_matching and not self._grayscale_normalize:
+                t0 = time.perf_counter()
+                aadhaar_img = match_histogram(aadhaar_img, selfie_img)
+                timings["hist_match_ms"] = _elapsed_ms(t0)
+                logger.info("Histogram matching: aadhaar → selfie tonal distribution")
 
             # Re-assess quality AFTER enhancement to avoid false flags
             # (pre-enhancement score is stored for reporting, post for decision)
@@ -242,6 +264,29 @@ class KYCPipelineOrchestrator:
                         )
                 except NoFaceDetectedError:
                     logger.debug("Dual-path: no face in original Aadhaar, using preprocessed")
+
+            # --- Stage 4b': Ensemble secondary face model (antelopev2 by default) ---
+            # Run the secondary recognition model on the SAME aligned crops produced
+            # by buffalo_l, then fuse per-model cosines via configured strategy.
+            if self.secondary.available:
+                t_sec = time.perf_counter()
+                sec_emb_a = self.secondary.get_embedding(aadhaar_face.aligned_crop)
+                sec_emb_s = self.secondary.get_embedding(selfie_face.aligned_crop)
+                if sec_emb_a is not None and sec_emb_s is not None:
+                    sec_score = self.scorer.cosine_similarity(sec_emb_a, sec_emb_s)
+                    cosines = {"primary": score, self.secondary.model_pack: sec_score}
+                    fused, winner = self.scorer.ensemble_cosine(
+                        cosines,
+                        strategy=self._ensemble_strategy,
+                        secondary_weight=self._secondary_weight,
+                    )
+                    timings["ensemble_ms"] = _elapsed_ms(t_sec)
+                    logger.info(
+                        "Ensemble: primary=%.4f %s=%.4f → %s=%.4f (strategy=%s)",
+                        score, self.secondary.model_pack, sec_score,
+                        winner, fused, self._ensemble_strategy,
+                    )
+                    score = fused
 
             # --- Stage 4c: AdaFace second model fusion ---
             if self.adaface.available:
@@ -443,8 +488,20 @@ class KYCPipelineOrchestrator:
 
         if score >= match_thresh:
             if vlm_same_person is False:
-                match = False
-                confidence_pct = base_conf + self._vlm_reject_high
+                # Soft-override: VLM is unreliable on printed-card IPD/landmarks.
+                # When cosine is strong, apply a mild penalty but keep the match.
+                if score >= self._vlm_soft_override_cosine:
+                    match = True
+                    confidence_pct = base_conf + self._vlm_soft_override_penalty
+                    logger.info(
+                        "VLM soft-override: cosine %.3f >= %.2f, keeping MATCH despite VLM=false "
+                        "(penalty %.1f instead of %.1f)",
+                        score, self._vlm_soft_override_cosine,
+                        self._vlm_soft_override_penalty, self._vlm_reject_high,
+                    )
+                else:
+                    match = False
+                    confidence_pct = base_conf + self._vlm_reject_high
             else:
                 match = True
                 vlm_bonus = self._vlm_confirm_bonus if vlm_same_person is True else 0.0
@@ -458,8 +515,19 @@ class KYCPipelineOrchestrator:
                 age_bonus = self._age_gap_vlm_bonus if age_gap > self._age_gap_threshold else 0.0
                 confidence_pct = base_conf + self._vlm_confirm_bonus + age_bonus
             else:
-                match = False
-                confidence_pct = base_conf + self._vlm_reject_uncertain
+                # Uncertain zone with VLM=false or unavailable.
+                # If cosine is still near the threshold AND VLM rejected, use the soft-override
+                # path as a partial pass (still NO MATCH but softer penalty).
+                if vlm_same_person is False and score >= self._vlm_soft_override_cosine:
+                    match = False
+                    confidence_pct = base_conf + self._vlm_soft_override_penalty
+                    logger.info(
+                        "VLM soft penalty in uncertain zone: cosine %.3f >= %.2f, penalty %.1f",
+                        score, self._vlm_soft_override_cosine, self._vlm_soft_override_penalty,
+                    )
+                else:
+                    match = False
+                    confidence_pct = base_conf + self._vlm_reject_uncertain
         else:
             match = False
             confidence_pct = base_conf

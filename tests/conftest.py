@@ -14,6 +14,7 @@ def sample_config():
             "clahe_tile_size": 8,
             "dual_path": False,
             "grayscale_normalize": False,
+            "histogram_matching": False,
         },
         "enhancement": {
             "enabled": False,
@@ -21,6 +22,7 @@ def sample_config():
             "model_path": "models/realesrgan/RealESRGAN_x4plus.pth",
             "upscale": 2,
             "quality_threshold": 0.4,
+            "force_enhance_aadhaar": False,
         },
         "face": {
             "model_pack": "buffalo_l",
@@ -29,6 +31,10 @@ def sample_config():
             "det_thresh": 0.7,
             "det_thresh_fallback": 0.5,
             "ctx_id": 0,
+            "enable_ensemble": False,
+            "secondary_model": "antelopev2",
+            "ensemble_strategy": "max",
+            "secondary_weight": 0.5,
         },
         "similarity": {
             "match_threshold": 0.60,
@@ -78,6 +84,11 @@ def sample_config():
             "quality_penalty": -5.0,
             "age_gap_vlm_bonus": 5.0,
             "gender_mismatch_penalty": 0.0,
+            # Default disabled in tests: unit tests that want to assert pre-v3
+            # behavior keep using -20/-10 penalties. Tests that exercise the
+            # soft-override path opt-in by setting these explicitly.
+            "vlm_soft_override_cosine": 1.1,
+            "vlm_soft_override_penalty": -5.0,
         },
     }
 

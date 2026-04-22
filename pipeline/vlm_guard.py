@@ -23,21 +23,37 @@ logger = logging.getLogger(__name__)
 VLM_PROMPT = """You are a biometric face verification assistant for KYC document checking.
 
 You are given two face images:
-- Image 1: face crop from an Aadhaar identity card (may be printed, low quality, grainy).
-- Image 2: a live user selfie.
+- Image 1: face crop from an Aadhaar identity card. It is a PRINTED photograph on a plastic card — expect geometric distortion from printing, compression artifacts, blur, colour shift, and uneven lighting.
+- Image 2: a live user selfie taken with a phone camera in natural conditions.
 
 The automated embedding system computed a cosine similarity of {score:.3f}
 (scale: 0.0 = completely different, 1.0 = identical, threshold for match is 0.60).
 
-Compare ONLY bone-structure features that DO NOT change with aging: eye socket shape, inter-pupillary distance, nose bridge width and profile, ear shape and position, forehead height-to-width ratio, cheekbone structure.
-IGNORE completely: image quality, lighting, skin tone, glasses, facial hair, makeup, wrinkles, weight changes, hair changes.
-DO NOT penalize for age-related differences — people's faces change over time but their bone structure stays the same.
+HOW TO COMPARE — focus on STABLE identity cues that survive aging AND printing:
+  - Overall face shape (oval, round, square, heart)
+  - Nose SHAPE (straight / curved / hooked, narrow / wide tip) — NOT exact measurements
+  - Eye shape (almond, round, hooded) and relative placement — NOT exact spacing in pixels
+  - Eyebrow shape and thickness pattern
+  - Moles, scars, or distinctive marks
+  - Facial hair pattern (beard/moustache shape, even if fullness differs)
+  - Ear shape and lobe type when visible
+  - Hairline pattern at the forehead
 
-If the bone structure is consistent, answer same_person=true even if surface appearance differs due to aging.
-Only answer same_person=false if the bone STRUCTURE is fundamentally different (different eye spacing, different nose shape, different skull proportions).
+WHAT YOU MUST IGNORE on the Aadhaar image:
+  - Exact inter-pupillary distance in pixels (printing + perspective distort this)
+  - Exact eye-socket spacing in pixels (same reason)
+  - Pixel-level landmark geometry (unreliable on printed cards)
+  - Image quality, lighting, skin tone, colour cast
+  - Glasses, makeup, wrinkles, weight changes, hair length / style / colour
+  - Age-related changes (softer jawline, greying, minor puffiness)
+
+DECISION RULE:
+  - If the STABLE identity cues above are consistent → same_person=true, even if surface appearance differs.
+  - Only return same_person=false when you see a FUNDAMENTALLY different face: different face shape AND different nose shape AND different eyebrow pattern, OR obviously different gender / ethnicity.
+  - When evidence is ambiguous or mixed, PREFER same_person=true. The embedding system already handles the clear negatives; your job here is to save real users from being rejected on low-quality prints.
 
 Respond ONLY with valid JSON (no other text):
-{{"same_person": true, "confidence": "high", "reasoning": "one sentence explaining key structural match/mismatch", "quality_issues": "description or null"}}"""
+{{"same_person": true, "confidence": "high", "reasoning": "one sentence focusing on stable identity cues (not IPD / landmark measurements)", "quality_issues": "description or null"}}"""
 
 AGE_GAP_PROMPT_SUPPLEMENT = """
 CRITICAL AGE CONTEXT: The Aadhaar face is estimated at age {aadhaar_age}, the selfie at age {selfie_age} (~{age_gap} year gap).
@@ -156,7 +172,7 @@ class VLMGuard:
 
         prompt = VLM_PROMPT.format(score=cosine_score)
         age_gap = abs(aadhaar_age - selfie_age)
-        if age_gap > 3 and aadhaar_age > 0 and selfie_age > 0:
+        if age_gap > 2 and aadhaar_age > 0 and selfie_age > 0:
             prompt += AGE_GAP_PROMPT_SUPPLEMENT.format(
                 aadhaar_age=aadhaar_age, selfie_age=selfie_age, age_gap=age_gap,
             )

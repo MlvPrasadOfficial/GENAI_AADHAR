@@ -310,3 +310,83 @@ class TestComputeAllMetrics:
         f2.pose = np.array([12.0, 3.0, 1.0], dtype=np.float32)
         result = scorer.compute_all_metrics(f1, f2)
         assert result.pose_diff > 0
+
+
+class TestEnsembleCosine:
+    """v3: ensemble_cosine() fuses per-model scores."""
+
+    def test_max_picks_best_score(self):
+        fused, winner = SimilarityScorer.ensemble_cosine(
+            {"primary": 0.45, "antelopev2": 0.62}, strategy="max"
+        )
+        assert abs(fused - 0.62) < 1e-6
+        assert winner == "antelopev2"
+
+    def test_mean_averages_scores(self):
+        fused, winner = SimilarityScorer.ensemble_cosine(
+            {"primary": 0.4, "antelopev2": 0.6}, strategy="mean"
+        )
+        assert abs(fused - 0.5) < 1e-6
+        assert winner == "ensemble"
+
+    def test_weighted_blends_primary_and_secondary(self):
+        fused, _ = SimilarityScorer.ensemble_cosine(
+            {"primary": 0.5, "antelopev2": 0.8},
+            strategy="weighted", secondary_weight=0.5,
+        )
+        assert abs(fused - 0.65) < 1e-6  # 0.5*0.5 + 0.5*0.8
+
+    def test_weighted_falls_back_to_max_without_primary(self):
+        fused, winner = SimilarityScorer.ensemble_cosine(
+            {"buffalo_l": 0.4, "antelopev2": 0.7}, strategy="weighted",
+        )
+        assert abs(fused - 0.7) < 1e-6
+        assert winner == "antelopev2"
+
+    def test_ignores_none_entries(self):
+        fused, winner = SimilarityScorer.ensemble_cosine(
+            {"primary": 0.55, "antelopev2": None}, strategy="max",
+        )
+        assert abs(fused - 0.55) < 1e-6
+        assert winner == "primary"
+
+    def test_empty_returns_zero(self):
+        fused, winner = SimilarityScorer.ensemble_cosine({}, strategy="max")
+        assert fused == 0.0
+        assert winner == "none"
+
+    def test_unknown_strategy_falls_back_to_max(self):
+        fused, winner = SimilarityScorer.ensemble_cosine(
+            {"primary": 0.3, "other": 0.8}, strategy="bogus",
+        )
+        assert abs(fused - 0.8) < 1e-6
+        assert winner == "other"
+
+
+class TestQualityAdjustedWeights:
+    """v3: low-quality inputs should lean much more heavily on cosine."""
+
+    def test_disabled_returns_defaults(self, scorer):
+        # sample_config has quality_weighted_fusion=False
+        w = scorer.get_quality_adjusted_weights(0.1)
+        assert w == scorer.fusion_weights
+
+    def test_very_low_quality_cosine_dominant(self, sample_config):
+        sample_config["similarity"]["quality_weighted_fusion"] = True
+        s = SimilarityScorer(sample_config)
+        w = s.get_quality_adjusted_weights(0.2)
+        assert w["cosine"] >= 0.75
+        assert w["ssim"] <= 0.05
+
+    def test_low_medium_quality_cosine_heavy(self, sample_config):
+        sample_config["similarity"]["quality_weighted_fusion"] = True
+        s = SimilarityScorer(sample_config)
+        w = s.get_quality_adjusted_weights(0.45)
+        assert w["cosine"] >= 0.65
+        assert w["landmark"] <= 0.20
+
+    def test_high_quality_keeps_default_weights(self, sample_config):
+        sample_config["similarity"]["quality_weighted_fusion"] = True
+        s = SimilarityScorer(sample_config)
+        w = s.get_quality_adjusted_weights(0.8)
+        assert w == s.fusion_weights

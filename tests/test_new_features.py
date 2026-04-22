@@ -258,14 +258,17 @@ class TestQualityWeightedFusion:
         w = scorer.get_quality_adjusted_weights(0.2)
         assert w == scorer.fusion_weights
 
-    def test_enabled_low_quality_boosts_landmark(self, sample_config):
+    def test_enabled_low_quality_boosts_cosine(self, sample_config):
+        """v3: quality-weighted fusion now makes cosine dominant at low quality
+        (old behavior boosted landmark; printed-card landmarks are unreliable)."""
         cfg = dict(sample_config)
         cfg["similarity"] = dict(cfg["similarity"])
         cfg["similarity"]["quality_weighted_fusion"] = True
         scorer = SimilarityScorer(cfg)
         w = scorer.get_quality_adjusted_weights(0.2)
-        assert w["landmark"] == 0.35
-        assert w["ssim"] == 0.05
+        assert w["cosine"] == 0.80
+        assert w["landmark"] == 0.10
+        assert w["ssim"] == 0.03
 
     def test_enabled_good_quality_unchanged(self, sample_config):
         cfg = dict(sample_config)

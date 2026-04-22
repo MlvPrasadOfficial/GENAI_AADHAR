@@ -62,34 +62,48 @@ def download_realesrgan() -> None:
     download_file(REALESRGAN_URL, REALESRGAN_PATH)
 
 
-def download_insightface() -> None:
-    """Trigger InsightFace buffalo_l auto-download."""
-    print("\n[2/2] InsightFace buffalo_l")
+def _download_insightface_pack(name: str, label: str) -> None:
+    """Trigger an InsightFace model pack auto-download via FaceAnalysis."""
+    print(f"\n{label}")
     root = MODELS_DIR / "insightface"
     root.mkdir(parents=True, exist_ok=True)
     os.environ["INSIGHTFACE_ROOT"] = str(root)
 
-    buffalo_dir = root / "models" / "buffalo_l"
-    if buffalo_dir.exists() and any(buffalo_dir.glob("*.onnx")):
-        print(f"  Already exists: {buffalo_dir}")
+    pack_dir = root / "models" / name
+    if pack_dir.exists() and any(pack_dir.glob("*.onnx")):
+        print(f"  Already exists: {pack_dir}")
         return
 
-    print("  Triggering auto-download via FaceAnalysis.prepare()...")
+    print(f"  Triggering auto-download for pack '{name}' via FaceAnalysis.prepare()...")
     import insightface
 
     app = insightface.app.FaceAnalysis(
-        name="buffalo_l",
+        name=name,
         root=str(root),
         providers=["CPUExecutionProvider"],
     )
     app.prepare(ctx_id=-1, det_size=(160, 160))
-    print(f"  Done: {buffalo_dir}")
+    print(f"  Done: {pack_dir}")
+
+
+def download_insightface() -> None:
+    """Trigger InsightFace buffalo_l auto-download (primary recognition pack)."""
+    _download_insightface_pack("buffalo_l", "[2/3] InsightFace buffalo_l (primary)")
+
+
+def download_antelopev2() -> None:
+    """Trigger InsightFace antelopev2 auto-download (secondary ensemble pack)."""
+    _download_insightface_pack("antelopev2", "[3/3] InsightFace antelopev2 (secondary ensemble)")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Download model weights")
     parser.add_argument("--realesrgan-only", action="store_true")
     parser.add_argument("--insightface-only", action="store_true")
+    parser.add_argument(
+        "--skip-secondary", action="store_true",
+        help="Skip antelopev2 (ensemble second model) download",
+    )
     args = parser.parse_args()
 
     print(f"Models directory: {MODELS_DIR}")
@@ -98,9 +112,13 @@ def main():
         download_realesrgan()
     elif args.insightface_only:
         download_insightface()
+        if not args.skip_secondary:
+            download_antelopev2()
     else:
         download_realesrgan()
         download_insightface()
+        if not args.skip_secondary:
+            download_antelopev2()
 
     print("\nAll models ready.")
 

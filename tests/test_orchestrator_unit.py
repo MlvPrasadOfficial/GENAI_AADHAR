@@ -222,6 +222,57 @@ class TestGenderMismatchPenalty:
         assert conf1 == conf2
 
 
+class TestVLMSoftOverride:
+    """v3: soft-override path when cosine is strong but VLM says false.
+
+    Printed-card IPD/landmarks are unreliable, so we don't let a false VLM
+    verdict fully flip a match when cosine clears a configured bar.
+    """
+
+    def _cfg_with_override(self, sample_config, cosine_bar=0.50, penalty=-5.0):
+        sample_config["confidence_adjustments"]["vlm_soft_override_cosine"] = cosine_bar
+        sample_config["confidence_adjustments"]["vlm_soft_override_penalty"] = penalty
+        return KYCPipelineOrchestrator(sample_config)
+
+    def test_soft_override_flips_reject_to_match_in_match_zone(self, sample_config):
+        """Cosine 0.70, VLM=false, override bar 0.50 → MATCH with -5 penalty (not -20)."""
+        p = self._cfg_with_override(sample_config, cosine_bar=0.50, penalty=-5.0)
+        match, conf = p._fuse_decision(0.70, _decision(score=0.70), vlm_same_person=False)
+        assert match is True
+        assert abs(conf - 65.0) < 0.2  # 70 - 5
+
+    def test_soft_override_not_applied_below_bar(self, sample_config):
+        """Cosine 0.49 is below bar 0.50; uncertain zone reject path uses -10."""
+        p = self._cfg_with_override(sample_config, cosine_bar=0.50, penalty=-5.0)
+        match, conf = p._fuse_decision(
+            0.49, _decision("uncertain", 0.49, needs_vlm=True), vlm_same_person=False
+        )
+        assert match is False
+        assert abs(conf - 39.0) < 0.2  # 49 - 10 (regular uncertain reject)
+
+    def test_soft_override_uncertain_zone_soft_penalty(self, sample_config):
+        """Cosine 0.55 (uncertain) with VLM=false and bar 0.50 → soft -5 penalty."""
+        p = self._cfg_with_override(sample_config, cosine_bar=0.50, penalty=-5.0)
+        match, conf = p._fuse_decision(
+            0.55, _decision("uncertain", 0.55, needs_vlm=True), vlm_same_person=False
+        )
+        assert match is False  # still no-match in uncertain zone with VLM=false
+        assert abs(conf - 50.0) < 0.2  # 55 - 5 soft (not -10)
+
+    def test_soft_override_disabled_by_high_bar(self, pipeline):
+        """Default fixture has bar=1.1 (disabled) → VLM=false uses full -20 penalty."""
+        match, conf = pipeline._fuse_decision(0.70, _decision(score=0.70), vlm_same_person=False)
+        assert match is False
+        assert abs(conf - 50.0) < 0.2  # 70 - 20 (old behavior preserved)
+
+    def test_soft_override_does_not_affect_vlm_confirm(self, sample_config):
+        """VLM=true path is unchanged when override is enabled."""
+        p = self._cfg_with_override(sample_config, cosine_bar=0.50, penalty=-5.0)
+        match, conf = p._fuse_decision(0.70, _decision(score=0.70), vlm_same_person=True)
+        assert match is True
+        assert abs(conf - 78.0) < 0.2  # 70 + 8 (regular confirm bonus)
+
+
 class TestPreprocessingConfig:
     """CLAHE preprocessing wiring tests."""
 

@@ -131,4 +131,4 @@ class TestMaybeEnhance:
         with caplog.at_level(logging.WARNING):
             flat = np.full((200, 200, 3), 128, dtype=np.uint8)
             enhancer_enabled.maybe_enhance(flat)
-        assert "enhancement unavailable" in caplog.text
+        assert "unavailable" in caplog.text

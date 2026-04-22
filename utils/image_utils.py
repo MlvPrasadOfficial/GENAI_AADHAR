@@ -173,6 +173,45 @@ def apply_clahe(image: np.ndarray, clip_limit: float = 2.0, tile_size: int = 8) 
     return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
 
+def match_histogram(source: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    """Match a source image's color histogram to a reference image.
+
+    Each BGR channel is independently remapped via CDF matching so the output
+    has the same tonal distribution as the reference. Useful for shrinking the
+    color/lighting domain gap between printed Aadhaar photos and live selfies
+    before embedding extraction.
+
+    Args:
+        source: BGR uint8 array to be transformed (typically the Aadhaar crop).
+        reference: BGR uint8 array whose histogram is the target (typically selfie).
+
+    Returns:
+        BGR uint8 array with the same shape as ``source``.
+    """
+    if source.ndim != 3 or source.shape[2] != 3:
+        raise ValueError(f"source must be HxWx3 BGR, got {source.shape}")
+    if reference.ndim != 3 or reference.shape[2] != 3:
+        raise ValueError(f"reference must be HxWx3 BGR, got {reference.shape}")
+
+    matched = np.empty_like(source)
+    for ch in range(3):
+        src_vals, src_inv, src_counts = np.unique(
+            source[..., ch].ravel(), return_inverse=True, return_counts=True,
+        )
+        ref_vals, ref_counts = np.unique(reference[..., ch].ravel(), return_counts=True)
+
+        src_cdf = np.cumsum(src_counts).astype(np.float64)
+        src_cdf /= src_cdf[-1]
+        ref_cdf = np.cumsum(ref_counts).astype(np.float64)
+        ref_cdf /= ref_cdf[-1]
+
+        # For each source value, find the reference value whose CDF first exceeds it
+        interp = np.interp(src_cdf, ref_cdf, ref_vals)
+        matched[..., ch] = np.clip(interp[src_inv].reshape(source.shape[:2]), 0, 255).astype(np.uint8)
+
+    return matched
+
+
 def to_grayscale_bgr(image: np.ndarray) -> np.ndarray:
     """Convert a BGR image to 3-channel grayscale (removes color information).
 

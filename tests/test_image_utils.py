@@ -6,7 +6,10 @@ import cv2
 import numpy as np
 import pytest
 
-from utils.image_utils import apply_clahe, bgr_to_base64_jpeg, bytes_to_bgr, to_grayscale_bgr, validate_image_dimensions
+from utils.image_utils import (
+    apply_clahe, bgr_to_base64_jpeg, bytes_to_bgr, match_histogram,
+    to_grayscale_bgr, validate_image_dimensions,
+)
 
 
 class TestBytesToBGR:
@@ -200,3 +203,53 @@ class TestValidateImageDimensions:
         img = np.zeros((150, 150, 3), dtype=np.uint8)
         with pytest.raises(ValueError, match="too small"):
             validate_image_dimensions(img, min_size=200)
+
+
+class TestMatchHistogram:
+    """v3: match_histogram remaps tonal distribution from source toward reference."""
+
+    def _mean_per_channel(self, img):
+        return img.reshape(-1, 3).mean(axis=0)
+
+    def test_identical_source_reference_returns_equivalent(self):
+        rng = np.random.default_rng(42)
+        img = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
+        out = match_histogram(img, img)
+        assert out.shape == img.shape
+        assert out.dtype == np.uint8
+        # Matching to itself should round-trip near-identity (CDF maps bin→same bin).
+        assert np.abs(out.astype(int) - img.astype(int)).mean() < 1.0
+
+    def test_mean_shifts_toward_reference(self):
+        rng = np.random.default_rng(0)
+        # Source is dark-ish (mean ~80), reference is bright (mean ~200)
+        dark = (rng.integers(0, 255, (80, 80, 3)) * 0.4).astype(np.uint8) + 40
+        bright = np.clip(
+            (rng.integers(0, 255, (80, 80, 3)) * 0.4).astype(np.int32) + 170, 0, 255,
+        ).astype(np.uint8)
+        matched = match_histogram(dark, bright)
+
+        src_mean = self._mean_per_channel(dark)
+        ref_mean = self._mean_per_channel(bright)
+        out_mean = self._mean_per_channel(matched)
+
+        # Each channel's mean should have moved from source toward reference
+        assert np.all(out_mean > src_mean + 10)
+        assert np.all(np.abs(out_mean - ref_mean) < np.abs(src_mean - ref_mean))
+
+    def test_output_is_uint8(self):
+        src = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
+        ref = np.random.randint(0, 255, (48, 48, 3), dtype=np.uint8)
+        out = match_histogram(src, ref)
+        assert out.dtype == np.uint8
+        assert out.min() >= 0 and out.max() <= 255
+
+    def test_rejects_non_bgr_source(self):
+        ref = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="source"):
+            match_histogram(np.zeros((32, 32), dtype=np.uint8), ref)
+
+    def test_rejects_non_bgr_reference(self):
+        src = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="reference"):
+            match_histogram(src, np.zeros((32, 32, 1), dtype=np.uint8))

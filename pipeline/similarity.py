@@ -231,6 +231,53 @@ class SimilarityScorer:
         # Quality-weighted fusion
         self.quality_weighted_fusion: bool = sim_cfg.get("quality_weighted_fusion", False)
 
+    @staticmethod
+    def ensemble_cosine(
+        cosines: dict[str, float],
+        strategy: str = "max",
+        secondary_weight: float = 0.5,
+    ) -> tuple[float, str]:
+        """Fuse multiple per-model cosine scores into a single score.
+
+        Args:
+            cosines: Mapping of ``model_name → cosine`` for each available model.
+                Any model whose cosine is None or NaN is ignored.
+            strategy: One of ``"max"`` (take best), ``"mean"`` (average), or
+                ``"weighted"`` (primary * (1-w) + secondary * w, requires a
+                ``primary`` key).
+            secondary_weight: Weight assigned to the non-primary entries under
+                the ``"weighted"`` strategy.
+
+        Returns:
+            (fused_score, winning_model). ``winning_model`` names the model
+            whose score was picked under "max", or "ensemble" for mean/weighted.
+        """
+        clean = {m: float(c) for m, c in cosines.items()
+                 if c is not None and not np.isnan(c)}
+        if not clean:
+            return 0.0, "none"
+
+        if strategy == "max":
+            winner = max(clean, key=clean.get)
+            return clean[winner], winner
+
+        if strategy == "mean":
+            return float(np.mean(list(clean.values()))), "ensemble"
+
+        if strategy == "weighted":
+            primary = clean.get("primary")
+            others = [v for k, v in clean.items() if k != "primary"]
+            if primary is None or not others:
+                winner = max(clean, key=clean.get)
+                return clean[winner], winner
+            sec_mean = float(np.mean(others))
+            w = float(np.clip(secondary_weight, 0.0, 1.0))
+            return float((1.0 - w) * primary + w * sec_mean), "ensemble"
+
+        # Unknown strategy → fallback to max
+        winner = max(clean, key=clean.get)
+        return clean[winner], winner
+
     def cosine_similarity(self, e1: np.ndarray, e2: np.ndarray) -> float:
         """Compute cosine similarity between two L2-normalized embeddings.
 
@@ -276,8 +323,10 @@ class SimilarityScorer:
     ) -> dict[str, float]:
         """Return fusion weights adjusted for image quality.
 
-        Low quality → increase landmark weight (bone structure is stable),
-        decrease SSIM weight (noisy images produce unreliable SSIM).
+        On low-quality inputs (e.g. printed Aadhaar cards) landmark geometry,
+        L2, and SSIM all become noisy — so we trust cosine much more.
+        The learned ArcFace embedding already captures structural identity;
+        adding noisy secondary metrics only drags the fused score down.
 
         Args:
             quality: Minimum quality score of the two images, in [0, 1].
@@ -291,17 +340,17 @@ class SimilarityScorer:
         w = dict(self.fusion_weights)
 
         if quality < 0.3:
-            # Very low quality: rely heavily on cosine + landmarks
-            w["cosine"] = 0.50
-            w["landmark"] = 0.35
+            # Very low quality: cosine-dominant, minimal secondary signals
+            w["cosine"] = 0.80
+            w["landmark"] = 0.10
+            w["l2"] = 0.07
+            w["ssim"] = 0.03
+        elif quality < 0.5:
+            # Low-medium quality: cosine-heavy, landmark still gets some weight
+            w["cosine"] = 0.70
+            w["landmark"] = 0.15
             w["l2"] = 0.10
             w["ssim"] = 0.05
-        elif quality < 0.5:
-            # Low-medium quality: boost landmarks slightly
-            w["cosine"] = 0.50
-            w["landmark"] = 0.30
-            w["l2"] = 0.10
-            w["ssim"] = 0.10
 
         return w
 

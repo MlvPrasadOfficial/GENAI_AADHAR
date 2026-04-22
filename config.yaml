@@ -6,6 +6,7 @@ preprocessing:
   clahe_tile_size: 8           # CLAHE local grid size
   dual_path: true              # Compare original vs preprocessed Aadhaar, keep better cosine score
   grayscale_normalize: false   # Convert both images to grayscale before embedding (experimental)
+  histogram_matching: true     # Match Aadhaar crop histogram to selfie crop (reduces color domain gap)
 
 enhancement:
   enabled: true
@@ -13,6 +14,7 @@ enhancement:
   model_path: "models/realesrgan/RealESRGAN_x4plus.pth"
   upscale: 2
   quality_threshold: 0.4   # skip enhancement if Laplacian quality >= this
+  force_enhance_aadhaar: true   # always upscale Aadhaar regardless of quality (printed cards)
 
 face:
   model_pack: "buffalo_l"
@@ -22,15 +24,20 @@ face:
   det_thresh_fallback: 0.5 # retry if no face found at primary threshold
   ctx_id: 0                # GPU device index
   flip_augment: true       # horizontal flip TTA for more robust embeddings
+  # Ensemble second face recognition model (Tier 3) — take max cosine across models
+  enable_ensemble: true
+  secondary_model: "antelopev2"    # InsightFace model zoo name (SCRFD + glintr100)
+  ensemble_strategy: "max"          # max | mean | weighted
+  secondary_weight: 0.5             # only used when strategy=weighted
 
 similarity:
   match_threshold: 0.60    # >= this = definite match
   uncertain_low: 0.40      # below this = definite no-match
-  age_gap_threshold: 5     # start relaxing thresholds when age gap exceeds this (years)
-  age_gap_relaxation_per_year: 0.01  # lower match_threshold by this per year beyond age_gap_threshold
-  max_age_gap_relaxation: 0.10       # cap total relaxation (threshold never drops below 0.50)
+  age_gap_threshold: 3     # start relaxing thresholds when age gap exceeds this (years)
+  age_gap_relaxation_per_year: 0.015  # lower match_threshold by this per year beyond age_gap_threshold
+  max_age_gap_relaxation: 0.12       # cap total relaxation (threshold never drops below 0.48)
   adaptive_thresholds: false  # enable quality-tier adaptive thresholds
-  quality_weighted_fusion: false  # adjust fusion weights based on image quality
+  quality_weighted_fusion: true   # adjust fusion weights based on image quality (cosine-heavier on low q)
 
 vlm_guard:
   enabled: true
@@ -76,9 +83,13 @@ batch:
 
 # Confidence score adjustments (additive, applied during decision fusion)
 confidence_adjustments:
-  vlm_confirmation_bonus: 8.0        # VLM confirms match
-  vlm_rejection_above_threshold: -20.0  # VLM rejects despite high cosine
-  vlm_rejection_uncertain: -10.0     # VLM rejects in uncertain zone
+  vlm_confirmation_bonus: 10.0       # VLM confirms match (raised to reward confirmations)
+  vlm_rejection_above_threshold: -12.0  # VLM rejects despite high cosine (softened from -20)
+  vlm_rejection_uncertain: -5.0      # VLM rejects in uncertain zone (softened from -10)
   quality_penalty: -5.0              # Low image quality deduction
-  age_gap_vlm_bonus: 5.0             # Extra bonus when VLM confirms AND age_gap > 5yr
+  age_gap_vlm_bonus: 5.0             # Extra bonus when VLM confirms AND age gap exceeds threshold
   gender_mismatch_penalty: 0.0       # Disabled by default (InsightFace gender unreliable on printed cards)
+  # VLM soft override: when cosine is strong but VLM says false, use a mild penalty
+  # instead of the full vlm_rejection_above_threshold (VLM is unreliable on printed-card IPD)
+  vlm_soft_override_cosine: 0.50     # cosine threshold above which soft-override applies
+  vlm_soft_override_penalty: -5.0    # penalty applied under soft-override (replaces -12)
