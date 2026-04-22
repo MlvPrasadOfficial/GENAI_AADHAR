@@ -62,8 +62,18 @@ def download_realesrgan() -> None:
     download_file(REALESRGAN_URL, REALESRGAN_PATH)
 
 
+INSIGHTFACE_ZIP_BASE = "https://github.com/deepinsight/insightface/releases/download/v0.7"
+
+
 def _download_insightface_pack(name: str, label: str) -> None:
-    """Trigger an InsightFace model pack auto-download via FaceAnalysis."""
+    """Download an InsightFace model pack via direct zip fetch + extract.
+
+    Bypasses FaceAnalysis.prepare() auto-download which silently fails for
+    antelopev2 (creates empty dir, then AssertionError 'detection' on load).
+    """
+    import shutil
+    import zipfile
+
     print(f"\n{label}")
     root = MODELS_DIR / "insightface"
     root.mkdir(parents=True, exist_ok=True)
@@ -74,16 +84,36 @@ def _download_insightface_pack(name: str, label: str) -> None:
         print(f"  Already exists: {pack_dir}")
         return
 
-    print(f"  Triggering auto-download for pack '{name}' via FaceAnalysis.prepare()...")
-    import insightface
+    # Stale empty dir from a previous failed auto-download blocks re-download.
+    if pack_dir.exists():
+        print(f"  Removing stale empty pack dir: {pack_dir}")
+        shutil.rmtree(pack_dir)
 
-    app = insightface.app.FaceAnalysis(
-        name=name,
-        root=str(root),
-        providers=["CPUExecutionProvider"],
-    )
-    app.prepare(ctx_id=-1, det_size=(160, 160))
-    print(f"  Done: {pack_dir}")
+    zip_url = f"{INSIGHTFACE_ZIP_BASE}/{name}.zip"
+    zip_path = root / "models" / f"{name}.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"  Downloading zip: {zip_url}")
+    download_file(zip_url, zip_path)
+
+    print(f"  Extracting to: {pack_dir}")
+    pack_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(pack_dir)
+
+    # Some zips nest files under an extra folder (e.g. antelopev2/<files>)
+    nested = pack_dir / name
+    if nested.is_dir() and any(nested.glob("*.onnx")):
+        for f in nested.iterdir():
+            f.rename(pack_dir / f.name)
+        nested.rmdir()
+
+    onnx_files = list(pack_dir.glob("*.onnx"))
+    if not onnx_files:
+        raise RuntimeError(f"Extraction of {name} produced no .onnx files in {pack_dir}")
+
+    zip_path.unlink(missing_ok=True)
+    print(f"  Done: {pack_dir} ({len(onnx_files)} onnx files)")
 
 
 def download_insightface() -> None:
